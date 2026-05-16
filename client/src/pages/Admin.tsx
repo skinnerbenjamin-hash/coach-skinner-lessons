@@ -13,10 +13,11 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
 import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
-import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video } from "lucide-react";
+import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
@@ -176,6 +177,150 @@ function SignOutButton() {
   );
 }
 
+function AddBookingDialog() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [memberId, setMemberId] = useState<string>("new");
+  const [parentName, setParentName] = useState("");
+  const [playerName, setPlayerName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [email, setEmail] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [time, setTime] = useState("16:00");
+  const [notes, setNotes] = useState("");
+
+  const { data: membersData } = useQuery<{ profiles: MemberRow[] }>({
+    queryKey: ["/api/admin/profiles"],
+    enabled: open,
+  });
+  const members = membersData?.profiles ?? [];
+
+  function pickMember(id: string) {
+    setMemberId(id);
+    if (id === "new") {
+      setParentName(""); setPlayerName(""); setPhone(""); setEmail("");
+      return;
+    }
+    const m = members.find(p => String(p.id) === id);
+    if (m) {
+      setParentName(m.parentName);
+      setPlayerName(m.playerName);
+      setPhone(m.phone);
+      setEmail(m.email);
+    }
+  }
+
+  const create = useMutation({
+    mutationFn: async () => {
+      const slot = `${date}T${time}`;
+      const body = {
+        slots: [slot],
+        phone: phone.trim(),
+        email: email.trim(),
+        parentName: parentName.trim(),
+        playerName: playerName.trim(),
+        notes: notes.trim(),
+      };
+      const r = await apiRequest("POST", "/api/bookings", body);
+      const json = await r.json();
+      if (!r.ok) throw new Error(json?.error || "Couldn't create booking");
+      return json;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/bookings"] });
+      qc.invalidateQueries({ queryKey: ["/api/admin/profiles"] });
+      toast({ title: "Booking added", description: "Confirmation emails were sent to you and the parent." });
+      setOpen(false);
+      setMemberId("new");
+      setParentName(""); setPlayerName(""); setPhone(""); setEmail(""); setNotes("");
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't book", description: e.message }),
+  });
+
+  const valid = parentName.trim() && playerName.trim() && phone.replace(/\D/g, "").length >= 7
+    && /@/.test(email) && date && time;
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" data-testid="button-admin-new-booking">
+          <CalendarPlus className="h-4 w-4 mr-2" /> New booking
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Add a booking</DialogTitle>
+          <DialogDescription>
+            Book a slot on behalf of a player. You and the parent both get the usual confirmation email with the calendar file.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>Player</Label>
+            <Select value={memberId} onValueChange={pickMember}>
+              <SelectTrigger data-testid="select-admin-booking-member">
+                <SelectValue placeholder="Pick a player or add new" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="new">+ Add new player</SelectItem>
+                {members.map(m => (
+                  <SelectItem key={m.id} value={String(m.id)}>
+                    {m.playerName} ({m.parentName})
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="ab-player">Player name</Label>
+              <Input id="ab-player" value={playerName} onChange={e => setPlayerName(e.target.value)} data-testid="input-admin-booking-player" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ab-parent">Parent name</Label>
+              <Input id="ab-parent" value={parentName} onChange={e => setParentName(e.target.value)} data-testid="input-admin-booking-parent" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="ab-phone">Phone</Label>
+              <Input id="ab-phone" value={phone} onChange={e => setPhone(e.target.value)} data-testid="input-admin-booking-phone" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ab-email">Email</Label>
+              <Input id="ab-email" type="email" value={email} onChange={e => setEmail(e.target.value)} data-testid="input-admin-booking-email" />
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-1">
+              <Label htmlFor="ab-date">Date</Label>
+              <Input id="ab-date" type="date" value={date} onChange={e => setDate(e.target.value)} data-testid="input-admin-booking-date" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="ab-time">Time</Label>
+              <Input id="ab-time" type="time" step={1800} value={time} onChange={e => setTime(e.target.value)} data-testid="input-admin-booking-time" />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="ab-notes">Notes (optional)</Label>
+            <Textarea id="ab-notes" rows={2} value={notes} onChange={e => setNotes(e.target.value)} data-testid="input-admin-booking-notes" />
+          </div>
+        </div>
+
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={() => create.mutate()} disabled={!valid || create.isPending} data-testid="button-admin-booking-submit">
+            {create.isPending ? "Booking…" : "Book lesson"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function BookingsPanel() {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -196,6 +341,9 @@ function BookingsPanel() {
 
   return (
     <div className="space-y-6 mt-4">
+      <div className="flex justify-end">
+        <AddBookingDialog />
+      </div>
       <Section title={`Upcoming (${upcoming.length})`}>
         {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
         {!isLoading && upcoming.length === 0 && (

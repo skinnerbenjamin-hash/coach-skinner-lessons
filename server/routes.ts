@@ -466,14 +466,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const parsed = checkoutSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { slots, phone, email, parentName, playerName, notes } = parsed.data;
+    const isAdmin = isAdminReq(req);
     // upsert profile
     const profile = storage.upsertProfile({ phone: normalizePhone(phone), email, parentName, playerName, notes });
-    // can't book inside 24h
-    if (slots.some(s => isWithin24h(s))) {
+    // Customers can't book inside 24h or beyond MAX_BOOKING_DAYS; admins bypass both.
+    if (!isAdmin && slots.some(s => isWithin24h(s))) {
       return res.status(400).json({ error: "Bookings must be at least 24 hours in advance." });
     }
-    // can't book more than MAX_BOOKING_DAYS ahead
-    if (slots.some(s => isBeyondMaxWindow(s))) {
+    if (!isAdmin && slots.some(s => isBeyondMaxWindow(s))) {
       return res.status(400).json({ error: `Bookings can be made up to ${MAX_BOOKING_DAYS} days in advance.` });
     }
     // collision check
