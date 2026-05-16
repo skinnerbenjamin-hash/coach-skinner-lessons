@@ -16,8 +16,11 @@ import {
 } from "@/lib/scheduling";
 import {
   ChevronLeft, ChevronRight, CalendarPlus, MessageSquareText,
-  Check, AlertTriangle, X,
+  Check, AlertTriangle, X, Camera, Search,
 } from "lucide-react";
+import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+
+const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
 type SlotsResponse = {
   days: { date: string; slots: { start: string; booked: boolean }[] }[];
@@ -27,7 +30,7 @@ type GapWarning = {
   message: string; suggestion?: { from: string; to: string; reason: string };
 };
 
-type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string };
+type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string; photoPath?: string };
 
 type Step = "profile" | "pick" | "review" | "done";
 
@@ -42,6 +45,16 @@ export default function Book() {
   const [playerName, setPlayerName] = useState("");
   const [notes, setNotes] = useState("");
   const [profileLoaded, setProfileLoaded] = useState<Profile | null>(null);
+
+  // returning user email lookup
+  const [lookupEmail, setLookupEmail] = useState("");
+  const [lookupError, setLookupError] = useState<string | null>(null);
+  const [lookupBusy, setLookupBusy] = useState(false);
+
+  // optional photo upload during signup
+  const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
+  const [pendingPhotoPreview, setPendingPhotoPreview] = useState<string | null>(null);
+  const [existingPhotoPath, setExistingPhotoPath] = useState<string>("");
 
   // selections
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -67,7 +80,7 @@ export default function Book() {
     const digits = normalizePhone(p);
     if (digits.length < 10) return;
     try {
-      const r = await fetch(`/api/profile/${digits}`);
+      const r = await fetch(`${API_BASE}/api/profile/${digits}`);
       if (r.ok) {
         const prof: Profile = await r.json();
         setProfileLoaded(prof);
@@ -75,11 +88,52 @@ export default function Book() {
         setPlayerName(prof.playerName);
         setNotes(prof.notes || "");
         if (prof.email) setEmail(prof.email);
+        if (prof.photoPath) setExistingPhotoPath(prof.photoPath);
       } else {
         setProfileLoaded(null);
       }
     } catch { /* ignore */ }
   };
+
+  // Returning user: look up by email and skip straight to picking times
+  const lookupByEmail = async () => {
+    const e = lookupEmail.trim();
+    if (!e) return;
+    setLookupBusy(true);
+    setLookupError(null);
+    try {
+      const r = await fetch(`${API_BASE}/api/my-bookings-by-email/${encodeURIComponent(e)}`);
+      if (!r.ok) {
+        setLookupError("We couldn't find a profile with that email. Fill out the form below to sign up.");
+        return;
+      }
+      const data = await r.json();
+      const prof: Profile = data.profile;
+      if (!prof) {
+        setLookupError("We couldn't find a profile with that email. Fill out the form below to sign up.");
+        return;
+      }
+      setProfileLoaded(prof);
+      setPhone(prof.phone);
+      setEmail(prof.email);
+      setParentName(prof.parentName);
+      setPlayerName(prof.playerName);
+      setNotes(prof.notes || "");
+      if (prof.photoPath) setExistingPhotoPath(prof.photoPath);
+      setStep("pick");
+      toast({ title: `Welcome back, ${prof.parentName}`, description: "We loaded your info — pick your times." });
+    } catch (err: any) {
+      setLookupError("Something went wrong looking that up. Please try again.");
+    } finally {
+      setLookupBusy(false);
+    }
+  };
+
+  function handlePhotoFile(f: File | null) {
+    setPendingPhoto(f);
+    if (pendingPhotoPreview) URL.revokeObjectURL(pendingPhotoPreview);
+    setPendingPhotoPreview(f ? URL.createObjectURL(f) : null);
+  }
 
   // gap check
   const [gapWarnings, setGapWarnings] = useState<GapWarning[]>([]);
@@ -117,7 +171,27 @@ export default function Book() {
         email: email.trim(),
         parentName, playerName, notes,
       });
-      return r.json();
+      const data = await r.json();
+      // After booking creates/updates the profile, upload optional photo if user chose one
+      if (pendingPhoto && data?.bookings?.[0]) {
+        try {
+          const lookupResp = await fetch(`${API_BASE}/api/profile/${normalizePhone(phone)}`);
+          if (lookupResp.ok) {
+            const prof: Profile = await lookupResp.json();
+            const fd = new FormData();
+            fd.append("photo", pendingPhoto);
+            fd.append("proofEmail", email.trim());
+            await fetch(`${API_BASE}/api/profile/${prof.id}/photo`, {
+              method: "POST",
+              credentials: "include",
+              body: fd,
+            });
+          }
+        } catch (err) {
+          console.error("photo upload failed:", err);
+        }
+      }
+      return data;
     },
     onSuccess: (resp) => {
       setConfirmation({
@@ -128,6 +202,8 @@ export default function Book() {
         manageUrl: resp.manageUrl ?? "/#/my-appointments",
       });
       setStep("done");
+      setPendingPhoto(null);
+      if (pendingPhotoPreview) { URL.revokeObjectURL(pendingPhotoPreview); setPendingPhotoPreview(null); }
       queryClient.invalidateQueries({ queryKey: ["/api/slots"] });
     },
     onError: (e: any) => {
@@ -156,9 +232,45 @@ export default function Book() {
       <Stepper step={step} />
 
       {step === "profile" && (
-        <Card className="mt-6">
+        <>
+        {/* Returning user shortcut */}
+        <Card className="mt-6 border-primary/40 bg-primary/5">
+          <CardContent className="p-5 space-y-3">
+            <div className="flex items-center gap-2">
+              <Search className="h-4 w-4 text-primary" />
+              <h2 className="text-base font-semibold">Already registered? Skip the form.</h2>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              Enter the email you used last time — we'll look you up and take you straight to picking times.
+            </p>
+            <div className="flex flex-col sm:flex-row gap-2">
+              <Input
+                type="email"
+                inputMode="email"
+                autoComplete="email"
+                placeholder="you@example.com"
+                value={lookupEmail}
+                onChange={(e) => setLookupEmail(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") lookupByEmail(); }}
+                data-testid="input-returning-email"
+              />
+              <Button
+                onClick={lookupByEmail}
+                disabled={!lookupEmail.trim() || lookupBusy}
+                data-testid="button-returning-lookup"
+              >
+                {lookupBusy ? "Looking up…" : "Look up"}
+              </Button>
+            </div>
+            {lookupError && (
+              <p className="text-xs text-destructive" data-testid="text-lookup-error">{lookupError}</p>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card className="mt-4">
           <CardContent className="p-6 space-y-4">
-            <h1 className="text-xl font-semibold">Tell us about the player</h1>
+            <h1 className="text-xl font-semibold">New here? Tell us about the player</h1>
             <p className="text-sm text-muted-foreground">
               We'll save this info so you can look up appointments later, reschedule, or
               book more sessions without re-typing.
@@ -228,6 +340,57 @@ export default function Book() {
                 />
               </div>
             </div>
+
+            {/* Optional player photo */}
+            <div className="rounded-lg border border-dashed border-border p-4">
+              <div className="flex items-center gap-4">
+                <div className="relative">
+                  <Avatar className="h-16 w-16">
+                    {pendingPhotoPreview ? (
+                      <AvatarImage src={pendingPhotoPreview} alt="Player" />
+                    ) : existingPhotoPath ? (
+                      <AvatarImage src={existingPhotoPath} alt="Player" />
+                    ) : null}
+                    <AvatarFallback className="bg-muted">
+                      <Camera className="h-5 w-5 text-muted-foreground" />
+                    </AvatarFallback>
+                  </Avatar>
+                </div>
+                <div className="flex-1">
+                  <Label className="text-sm font-medium">Player photo (optional)</Label>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Helps Coach recognize {playerName || "your player"} on lesson day. You can add or change this anytime later.
+                  </p>
+                  <div className="mt-2 flex flex-wrap items-center gap-2">
+                    <label className="cursor-pointer">
+                      <input
+                        type="file"
+                        accept="image/*"
+                        capture="user"
+                        className="hidden"
+                        data-testid="input-signup-photo"
+                        onChange={(e) => handlePhotoFile(e.target.files?.[0] ?? null)}
+                      />
+                      <span className="inline-flex items-center gap-2 text-sm font-medium text-primary hover:underline">
+                        <Camera className="h-4 w-4" />
+                        {pendingPhoto ? "Change photo" : "Add photo"}
+                      </span>
+                    </label>
+                    {pendingPhoto && (
+                      <button
+                        type="button"
+                        onClick={() => handlePhotoFile(null)}
+                        className="text-xs text-muted-foreground hover:text-destructive"
+                        data-testid="button-clear-signup-photo"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
             <div className="flex justify-end">
               <Button
                 disabled={!validProfile}
@@ -239,6 +402,7 @@ export default function Book() {
             </div>
           </CardContent>
         </Card>
+        </>
       )}
 
       {step === "pick" && (

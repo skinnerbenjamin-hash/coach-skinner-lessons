@@ -104,6 +104,12 @@ export class DatabaseStorage {
   getProfileById(id: number): Profile | undefined {
     return db.select().from(profiles).where(eq(profiles.id, id)).get();
   }
+  getAllProfiles(): Profile[] {
+    return db.select().from(profiles).orderBy(desc(profiles.createdAt)).all();
+  }
+  deleteProfile(id: number) {
+    db.delete(profiles).where(eq(profiles.id, id)).run();
+  }
   updateProfile(id: number, patch: { email?: string; parentName?: string; playerName?: string; phone?: string; notes?: string; photoPath?: string }): Profile | undefined {
     const existing = this.getProfileById(id);
     if (!existing) return undefined;

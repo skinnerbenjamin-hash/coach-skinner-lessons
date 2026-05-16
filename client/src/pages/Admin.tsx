@@ -16,7 +16,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
-import { Trash2, LogOut, Eye, EyeOff, Send } from "lucide-react";
+import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
@@ -57,12 +57,14 @@ export default function Admin() {
       <Tabs defaultValue="bookings">
         <TabsList>
           <TabsTrigger value="bookings" data-testid="tab-bookings">Bookings</TabsTrigger>
+          <TabsTrigger value="members" data-testid="tab-members">Members</TabsTrigger>
           <TabsTrigger value="availability" data-testid="tab-availability">Availability</TabsTrigger>
           <TabsTrigger value="overrides" data-testid="tab-overrides">Blackouts</TabsTrigger>
           <TabsTrigger value="reminders" data-testid="tab-reminders">SMS reminders</TabsTrigger>
           <TabsTrigger value="settings" data-testid="tab-settings">Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="bookings"><BookingsPanel /></TabsContent>
+        <TabsContent value="members"><MembersPanel /></TabsContent>
         <TabsContent value="availability"><AvailabilityPanel /></TabsContent>
         <TabsContent value="overrides"><OverridesPanel /></TabsContent>
         <TabsContent value="reminders"><RemindersPanel /></TabsContent>
@@ -777,6 +779,264 @@ function ChangeCredentialsCard() {
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+type MemberRow = {
+  id: number; phone: string; email: string; parentName: string; playerName: string;
+  notes: string; photoPath: string; createdAt: number;
+  bookingCount: number; upcomingCount: number; lastBookingStart: string | null;
+};
+
+function MembersPanel() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<{ profiles: MemberRow[] }>({ queryKey: ["/api/admin/profiles"] });
+  const [query, setQuery] = useState("");
+  const [sortKey, setSortKey] = useState<"createdAt" | "playerName" | "bookingCount" | "lastBookingStart">("createdAt");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("desc");
+  const [notesProfileId, setNotesProfileId] = useState<number | null>(null);
+
+  const del = useMutation({
+    mutationFn: async (id: number) => { await apiRequest("DELETE", `/api/admin/profiles/${id}`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/profiles"] });
+      qc.invalidateQueries({ queryKey: ["/api/bookings"] });
+      toast({ title: "Member removed" });
+    },
+    onError: (e: any) => toast({ title: "Couldn't delete", description: e?.message, variant: "destructive" }),
+  });
+
+  const filtered = useMemo(() => {
+    const rows = data?.profiles ?? [];
+    const q = query.trim().toLowerCase();
+    const matched = q
+      ? rows.filter((r) => {
+          return (
+            r.playerName.toLowerCase().includes(q) ||
+            r.parentName.toLowerCase().includes(q) ||
+            r.email.toLowerCase().includes(q) ||
+            r.phone.includes(q.replace(/\D/g, "")) ||
+            (r.notes || "").toLowerCase().includes(q)
+          );
+        })
+      : rows;
+    const sorted = [...matched].sort((a, b) => {
+      let cmp = 0;
+      if (sortKey === "playerName") cmp = a.playerName.localeCompare(b.playerName);
+      else if (sortKey === "bookingCount") cmp = a.bookingCount - b.bookingCount;
+      else if (sortKey === "lastBookingStart") {
+        const av = a.lastBookingStart ?? "";
+        const bv = b.lastBookingStart ?? "";
+        cmp = av < bv ? -1 : av > bv ? 1 : 0;
+      } else cmp = a.createdAt - b.createdAt;
+      return sortDir === "asc" ? cmp : -cmp;
+    });
+    return sorted;
+  }, [data, query, sortKey, sortDir]);
+
+  const profileForNotes = notesProfileId
+    ? (data?.profiles ?? []).find((p) => p.id === notesProfileId)
+    : null;
+
+  function toggleSort(k: typeof sortKey) {
+    if (sortKey === k) setSortDir(sortDir === "asc" ? "desc" : "asc");
+    else { setSortKey(k); setSortDir(k === "playerName" ? "asc" : "desc"); }
+  }
+
+  function downloadCsv() {
+    const rows = filtered;
+    const header = ["Player", "Parent", "Phone", "Email", "Total bookings", "Upcoming", "Last booked", "Focus / notes", "Signed up"];
+    const esc = (v: any) => {
+      const s = v == null ? "" : String(v);
+      if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+      return s;
+    };
+    const lines = [header.map(esc).join(",")];
+    for (const r of rows) {
+      lines.push([
+        r.playerName,
+        r.parentName,
+        formatPhone(r.phone),
+        r.email,
+        r.bookingCount,
+        r.upcomingCount,
+        r.lastBookingStart ? `${r.lastBookingStart.split("T")[0]} ${r.lastBookingStart.split("T")[1] ?? ""}`.trim() : "",
+        r.notes || "",
+        new Date(r.createdAt).toISOString().split("T")[0],
+      ].map(esc).join(","));
+    }
+    const blob = new Blob(["\uFEFF" + lines.join("\n")], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const today = new Date().toISOString().split("T")[0];
+    a.download = `coach-skinner-members-${today}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  return (
+    <div className="space-y-4 mt-4">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold">All members</h2>
+          <p className="text-sm text-muted-foreground">
+            Everyone who has signed up. Click a name to view notes. Use the search box to filter.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="h-4 w-4 absolute left-2.5 top-2.5 text-muted-foreground pointer-events-none" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search name, email, phone…"
+              className="pl-8 w-64"
+              data-testid="input-members-search"
+            />
+          </div>
+          <Button
+            variant="outline"
+            onClick={downloadCsv}
+            disabled={filtered.length === 0}
+            data-testid="button-download-members-csv"
+          >
+            <Download className="h-4 w-4 mr-2" /> Download CSV
+          </Button>
+        </div>
+      </div>
+
+      {isLoading && <p className="text-sm text-muted-foreground">Loading members…</p>}
+      {!isLoading && (data?.profiles ?? []).length === 0 && (
+        <p className="text-sm text-muted-foreground">No members yet. As parents sign up, they'll show up here.</p>
+      )}
+      {!isLoading && (data?.profiles ?? []).length > 0 && filtered.length === 0 && (
+        <p className="text-sm text-muted-foreground">No members match “{query}”.</p>
+      )}
+
+      {filtered.length > 0 && (
+        <div className="border rounded-md overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="text-left px-3 py-2 w-12"></th>
+                <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("playerName")}>
+                  Player {sortKey === "playerName" && (sortDir === "asc" ? "▲" : "▼")}
+                </th>
+                <th className="text-left px-3 py-2">Parent</th>
+                <th className="text-left px-3 py-2">Phone</th>
+                <th className="text-left px-3 py-2">Email</th>
+                <th className="text-right px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("bookingCount")}>
+                  Bookings {sortKey === "bookingCount" && (sortDir === "asc" ? "▲" : "▼")}
+                </th>
+                <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("lastBookingStart")}>
+                  Last booked {sortKey === "lastBookingStart" && (sortDir === "asc" ? "▲" : "▼")}
+                </th>
+                <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("createdAt")}>
+                  Signed up {sortKey === "createdAt" && (sortDir === "asc" ? "▲" : "▼")}
+                </th>
+                <th className="text-right px-3 py-2">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((m) => (
+                <tr key={m.id} className="border-t hover:bg-muted/30" data-testid={`row-member-${m.id}`}>
+                  <td className="px-3 py-2">
+                    <Avatar className="h-8 w-8">
+                      {m.photoPath ? <AvatarImage src={m.photoPath} alt={m.playerName} /> : null}
+                      <AvatarFallback className="text-[10px]">{initialsFor(m.playerName)}</AvatarFallback>
+                    </Avatar>
+                  </td>
+                  <td className="px-3 py-2">
+                    <button
+                      type="button"
+                      className="font-medium underline-offset-2 hover:underline text-left"
+                      onClick={() => setNotesProfileId(m.id)}
+                      data-testid={`button-member-notes-${m.id}`}
+                    >
+                      {m.playerName}
+                    </button>
+                    {m.notes && <div className="text-xs text-muted-foreground truncate max-w-[14rem]">“{m.notes}”</div>}
+                  </td>
+                  <td className="px-3 py-2">{m.parentName}</td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    <a href={`tel:${m.phone}`} className="hover:underline">{formatPhone(m.phone)}</a>
+                  </td>
+                  <td className="px-3 py-2">
+                    {m.email ? (
+                      <a href={`mailto:${m.email}`} className="hover:underline">{m.email}</a>
+                    ) : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-3 py-2 text-right tabular-nums">
+                    {m.bookingCount}
+                    {m.upcomingCount > 0 && (
+                      <span className="text-xs text-muted-foreground ml-1">({m.upcomingCount} upcoming)</span>
+                    )}
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap">
+                    {m.lastBookingStart ? formatDateLong(m.lastBookingStart.split("T")[0]) : <span className="text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-3 py-2 whitespace-nowrap text-muted-foreground">
+                    {new Date(m.createdAt).toLocaleDateString()}
+                  </td>
+                  <td className="px-3 py-2 text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        if (confirm(`Remove ${m.playerName} and all of their bookings? This can't be undone.`)) {
+                          del.mutate(m.id);
+                        }
+                      }}
+                      data-testid={`button-delete-member-${m.id}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      <Sheet open={notesProfileId !== null} onOpenChange={(o) => { if (!o) setNotesProfileId(null); }}>
+        <SheetContent side="right" className="sm:max-w-md w-full overflow-y-auto">
+          {profileForNotes && (
+            <>
+              <SheetHeader>
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-12 w-12">
+                    {profileForNotes.photoPath ? <AvatarImage src={profileForNotes.photoPath} alt={profileForNotes.playerName} /> : null}
+                    <AvatarFallback>{initialsFor(profileForNotes.playerName)}</AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <SheetTitle>{profileForNotes.playerName}</SheetTitle>
+                    <SheetDescription>
+                      {profileForNotes.parentName} · {formatPhone(profileForNotes.phone)}
+                      {profileForNotes.email && <> · {profileForNotes.email}</>}
+                    </SheetDescription>
+                  </div>
+                </div>
+                {profileForNotes.notes && (
+                  <div className="text-xs text-muted-foreground mt-2 italic">“{profileForNotes.notes}”</div>
+                )}
+              </SheetHeader>
+              <div className="mt-4">
+                <AdminCoachNotes
+                  profileId={profileForNotes.id}
+                  playerName={profileForNotes.playerName}
+                  parentName={profileForNotes.parentName}
+                />
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
+    </div>
   );
 }
 

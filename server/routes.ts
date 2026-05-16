@@ -883,6 +883,44 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  // Admin: list all profiles with booking stats
+  app.get("/api/admin/profiles", requireAdmin, (_req, res) => {
+    const all = storage.getAllProfiles();
+    const now = new Date().toISOString();
+    const out = all.map((p) => {
+      const bks = storage.getBookingsForProfile(p.id);
+      const sorted = bks.slice().sort((a, b) => (a.start < b.start ? 1 : -1));
+      const upcoming = bks.filter((b) => b.start >= now);
+      return {
+        ...p,
+        bookingCount: bks.length,
+        upcomingCount: upcoming.length,
+        lastBookingStart: sorted[0]?.start ?? null,
+      };
+    });
+    res.json({ profiles: out });
+  });
+
+  // Admin: delete a profile and all associated bookings/notes/photo
+  app.delete("/api/admin/profiles/:id", requireAdmin, (req, res) => {
+    const id = Number(req.params.id);
+    const profile = storage.getProfileById(id);
+    if (!profile) return res.status(404).json({ error: "Not found" });
+    const bks = storage.getBookingsForProfile(id);
+    for (const b of bks) {
+      try { cancelRemindersForBooking(b.id); } catch {}
+      storage.deleteBooking(b.id);
+    }
+    const notes = storage.getNotesForProfile(id);
+    for (const n of notes) storage.deleteNote(n.id);
+    if (profile.photoPath) {
+      const filename = profile.photoPath.replace(/^\/uploads\/photos\//, "");
+      try { fs.unlinkSync(path.join(PHOTO_DIR, filename)); } catch {}
+    }
+    storage.deleteProfile(id);
+    res.json({ ok: true });
+  });
+
   app.post("/api/settings/test-email", requireAdmin, async (_req, res) => {
     const to = getSetting("coachEmail");
     if (!to) return res.status(400).json({ error: "Set coach email first" });
