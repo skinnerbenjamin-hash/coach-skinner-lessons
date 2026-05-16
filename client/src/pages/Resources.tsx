@@ -63,7 +63,7 @@ export default function Resources() {
     } catch {}
   }, []);
 
-  const { data, isLoading, isError, error } = useQuery<{ resources: Resource[]; categories: string[] }>({
+  const { data, isLoading, isError, error } = useQuery<{ resources: Resource[]; categories: Array<{ id: string; label: string } | string> }>({
     queryKey: ["/api/resources", activeEmail],
     queryFn: async () => {
       const r = await apiRequest(
@@ -91,7 +91,9 @@ export default function Resources() {
   }
 
   const resources = data?.resources ?? [];
-  const categories = data?.categories ?? [];
+  const categories = (data?.categories ?? []).map((c) =>
+    typeof c === "string" ? { id: c, label: categoryLabel(c) } : c
+  );
   const filtered = category === "all" ? resources : resources.filter(r => r.category === category);
 
   return (
@@ -154,7 +156,7 @@ export default function Resources() {
               <SelectContent>
                 <SelectItem value="all">All categories</SelectItem>
                 {categories.map((c) => (
-                  <SelectItem key={c} value={c}>{categoryLabel(c)}</SelectItem>
+                  <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
