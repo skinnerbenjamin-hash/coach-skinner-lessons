@@ -1,15 +1,16 @@
 import {
-  availability, bookings, dateOverrides, profiles, normalizePhone,
+  availability, bookings, dateOverrides, profiles, coachingNotes, normalizePhone,
 } from '@shared/schema';
 import type {
   Availability, InsertAvailability,
   Booking, InsertBooking,
   DateOverride, InsertDateOverride,
   Profile, InsertProfile, BookingWithProfile,
+  CoachingNote, InsertCoachingNote,
 } from '@shared/schema';
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
-import { eq, and, gte, lte, inArray } from "drizzle-orm";
+import { eq, and, gte, lte, inArray, desc } from "drizzle-orm";
 
 const sqlite = new Database(process.env.DB_PATH || "data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -45,6 +46,14 @@ sqlite.exec(`
     start_time TEXT,
     end_time TEXT
   );
+  CREATE TABLE IF NOT EXISTS coaching_notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    profile_id INTEGER NOT NULL,
+    author TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS coaching_notes_profile_idx ON coaching_notes(profile_id);
 `);
 
 // Migration: add email column to existing profiles tables that pre-date the email feature.
@@ -53,7 +62,10 @@ try {
   if (!cols.some(c => c.name === "email")) {
     sqlite.exec(`ALTER TABLE profiles ADD COLUMN email TEXT NOT NULL DEFAULT ''`);
   }
-} catch (e) { console.error("profiles email migration failed:", e); }
+  if (!cols.some(c => c.name === "photo_path")) {
+    sqlite.exec(`ALTER TABLE profiles ADD COLUMN photo_path TEXT NOT NULL DEFAULT ''`);
+  }
+} catch (e) { console.error("profiles migration failed:", e); }
 
 export const db = drizzle(sqlite);
 
@@ -92,7 +104,7 @@ export class DatabaseStorage {
   getProfileById(id: number): Profile | undefined {
     return db.select().from(profiles).where(eq(profiles.id, id)).get();
   }
-  updateProfile(id: number, patch: { email?: string; parentName?: string; playerName?: string; phone?: string; notes?: string }): Profile | undefined {
+  updateProfile(id: number, patch: { email?: string; parentName?: string; playerName?: string; phone?: string; notes?: string; photoPath?: string }): Profile | undefined {
     const existing = this.getProfileById(id);
     if (!existing) return undefined;
     const fields: Record<string, string> = {};
@@ -101,9 +113,25 @@ export class DatabaseStorage {
     if (patch.playerName !== undefined) fields.playerName = patch.playerName;
     if (patch.phone !== undefined) fields.phone = normalizePhone(patch.phone);
     if (patch.notes !== undefined) fields.notes = patch.notes;
+    if (patch.photoPath !== undefined) fields.photoPath = patch.photoPath;
     if (Object.keys(fields).length === 0) return existing;
     db.update(profiles).set(fields).where(eq(profiles.id, id)).run();
     return this.getProfileById(id);
+  }
+
+  // Coaching notes
+  getNotesForProfile(profileId: number): CoachingNote[] {
+    return db.select().from(coachingNotes).where(eq(coachingNotes.profileId, profileId))
+      .orderBy(coachingNotes.createdAt).all();
+  }
+  addNote(input: InsertCoachingNote): CoachingNote {
+    return db.insert(coachingNotes).values({ ...input, createdAt: Date.now() }).returning().get();
+  }
+  getNoteById(id: number): CoachingNote | undefined {
+    return db.select().from(coachingNotes).where(eq(coachingNotes.id, id)).get();
+  }
+  deleteNote(id: number) {
+    db.delete(coachingNotes).where(eq(coachingNotes.id, id)).run();
   }
   upsertProfile(input: InsertProfile): Profile {
     const phone = normalizePhone(input.phone);
@@ -166,6 +194,7 @@ export class DatabaseStorage {
       phone: p?.phone ?? "",
       email: p?.email ?? "",
       notes: p?.notes ?? "",
+      photoPath: p?.photoPath ?? "",
     };
   }
 }

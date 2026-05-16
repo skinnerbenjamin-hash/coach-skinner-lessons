@@ -10,15 +10,25 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Textarea } from "@/components/ui/textarea";
+import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "@/components/ui/sheet";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
-import { Trash2, LogOut, Eye, EyeOff } from "lucide-react";
+import { Trash2, LogOut, Eye, EyeOff, Send } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
-  parentName: string; playerName: string; phone: string; notes: string;
+  profileId: number;
+  parentName: string; playerName: string; phone: string; email: string; notes: string;
+  photoPath: string;
 };
+type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; createdAt: number };
+
+function initialsFor(name: string): string {
+  return (name || "?").trim().split(/\s+/).slice(0, 2).map(p => p[0] || "").join("").toUpperCase() || "?";
+}
 type Availability = { id: number; dayOfWeek: number; startTime: string; endTime: string };
 type DateOverride = { id: number; date: string; type: string; startTime: string | null; endTime: string | null };
 
@@ -168,6 +178,11 @@ function BookingsPanel() {
     mutationFn: async (id: number) => { await apiRequest("DELETE", `/api/bookings/${id}?admin=1`); },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/bookings"] }); toast({ title: "Cancelled" }); },
   });
+  const [notesProfileId, setNotesProfileId] = useState<number | null>(null);
+  function openNotesFor(profileId: number) { setNotesProfileId(profileId); }
+  const profileForNotes = notesProfileId
+    ? (data?.bookings ?? []).find(b => b.profileId === notesProfileId)
+    : null;
   const upcoming = (data?.bookings ?? []).filter(b => b.start >= todayISO() + "T00:00")
     .sort((a, b) => a.start.localeCompare(b.start));
   const past = (data?.bookings ?? []).filter(b => b.start < todayISO() + "T00:00")
@@ -183,13 +198,27 @@ function BookingsPanel() {
         <div className="space-y-2">
           {upcoming.map(b => (
             <div key={b.id} className="border rounded-md p-3 flex items-center justify-between gap-3" data-testid={`row-admin-booking-${b.id}`}>
-              <div>
-                <div className="font-medium">
-                  {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
-                </div>
-                <div className="text-sm text-muted-foreground">
-                  {b.playerName} · {b.parentName} · {formatPhone(b.phone)}
-                  {b.notes && <span> · “{b.notes}”</span>}
+              <div className="flex items-center gap-3 min-w-0">
+                <Avatar className="h-10 w-10 flex-shrink-0">
+                  {b.photoPath ? <AvatarImage src={b.photoPath} alt={b.playerName} /> : null}
+                  <AvatarFallback className="text-xs">{initialsFor(b.playerName)}</AvatarFallback>
+                </Avatar>
+                <div className="min-w-0">
+                  <div className="font-medium">
+                    {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    <button
+                      type="button"
+                      className="font-medium text-foreground underline-offset-2 hover:underline"
+                      onClick={() => openNotesFor(b.profileId)}
+                      data-testid={`button-open-notes-${b.profileId}`}
+                    >
+                      {b.playerName}
+                    </button>
+                    {" "}· {b.parentName} · {formatPhone(b.phone)}
+                    {b.notes && <span> · “{b.notes}”</span>}
+                  </div>
                 </div>
               </div>
               <Button
@@ -209,13 +238,49 @@ function BookingsPanel() {
           <div className="space-y-2 opacity-70">
             {past.map(b => (
               <div key={b.id} className="border rounded-md p-3 flex items-center justify-between text-sm">
-                <div>{formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)} · {b.playerName}</div>
+                <div className="flex items-center gap-2">
+                  <Avatar className="h-7 w-7">
+                    {b.photoPath ? <AvatarImage src={b.photoPath} alt={b.playerName} /> : null}
+                    <AvatarFallback className="text-[10px]">{initialsFor(b.playerName)}</AvatarFallback>
+                  </Avatar>
+                  <span>{formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)} · <button type="button" className="underline-offset-2 hover:underline" onClick={() => openNotesFor(b.profileId)}>{b.playerName}</button></span>
+                </div>
                 <Badge variant="outline">Done</Badge>
               </div>
             ))}
           </div>
         </Section>
       )}
+
+      <Sheet open={notesProfileId !== null} onOpenChange={(o) => { if (!o) setNotesProfileId(null); }}>
+        <SheetContent side="right" className="sm:max-w-md w-full overflow-y-auto">
+          {profileForNotes && (
+            <>
+              <SheetHeader>
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-12 w-12">
+                    {profileForNotes.photoPath ? <AvatarImage src={profileForNotes.photoPath} alt={profileForNotes.playerName} /> : null}
+                    <AvatarFallback>{initialsFor(profileForNotes.playerName)}</AvatarFallback>
+                  </Avatar>
+                  <div>
+                    <SheetTitle>{profileForNotes.playerName}</SheetTitle>
+                    <SheetDescription>
+                      {profileForNotes.parentName} · {formatPhone(profileForNotes.phone)}
+                      {profileForNotes.email && <> · {profileForNotes.email}</>}
+                    </SheetDescription>
+                  </div>
+                </div>
+                {profileForNotes.notes && (
+                  <div className="text-xs text-muted-foreground mt-2 italic">“{profileForNotes.notes}”</div>
+                )}
+              </SheetHeader>
+              <div className="mt-4">
+                <AdminCoachNotes profileId={profileForNotes.profileId} playerName={profileForNotes.playerName} parentName={profileForNotes.parentName} />
+              </div>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }
@@ -721,5 +786,112 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground mb-2">{title}</h2>
       {children}
     </section>
+  );
+}
+
+function AdminCoachNotes({ profileId, playerName, parentName }: { profileId: number; playerName: string; parentName: string }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [text, setText] = useState("");
+
+  const { data, isLoading } = useQuery<{ notes: CoachingNote[] }>({
+    queryKey: ["/api/notes", profileId],
+    queryFn: async () => {
+      const r = await apiRequest("GET", `/api/notes/${profileId}`);
+      return r.json();
+    },
+  });
+
+  const postMut = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("POST", `/api/notes/${profileId}`, { text: text.trim() });
+      return r.json();
+    },
+    onSuccess: () => {
+      setText("");
+      qc.invalidateQueries({ queryKey: ["/api/notes", profileId] });
+      toast({ title: "Note posted", description: `${parentName || "The parent"} will be notified by email.` });
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't post note", description: e.message }),
+  });
+
+  const delMut = useMutation({
+    mutationFn: async (noteId: number) => {
+      await apiRequest("DELETE", `/api/notes/${noteId}`);
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/notes", profileId] });
+      toast({ title: "Note deleted" });
+    },
+  });
+
+  const notes = data?.notes ?? [];
+
+  return (
+    <div className="space-y-3" data-testid="admin-coach-notes">
+      <div>
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Coaching notes</h3>
+        <p className="text-xs text-muted-foreground">Two-way thread with {parentName || "the parent"}. They get an email each time you post here.</p>
+      </div>
+
+      <div className="space-y-2 max-h-[55vh] overflow-y-auto">
+        {isLoading && <p className="text-sm text-muted-foreground">Loading notes…</p>}
+        {!isLoading && notes.length === 0 && (
+          <p className="text-sm text-muted-foreground">No notes yet. Start the thread below.</p>
+        )}
+        {notes.map(n => (
+          <div
+            key={n.id}
+            className={
+              "rounded-md p-3 text-sm " +
+              (n.author === "coach"
+                ? "bg-primary/10 border-l-4 border-primary"
+                : "bg-muted border-l-4 border-muted-foreground/30")
+            }
+            data-testid={`admin-note-${n.id}`}
+          >
+            <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+              <span className="font-medium">
+                {n.author === "coach" ? "You (Coach)" : (parentName || "Parent")}
+              </span>
+              <span className="flex items-center gap-2">
+                <span>{new Date(n.createdAt).toLocaleString()}</span>
+                <button
+                  type="button"
+                  onClick={() => { if (confirm("Delete this note?")) delMut.mutate(n.id); }}
+                  className="text-muted-foreground hover:text-destructive"
+                  aria-label="Delete note"
+                  data-testid={`button-delete-note-${n.id}`}
+                >
+                  <Trash2 className="h-3 w-3" />
+                </button>
+              </span>
+            </div>
+            <div className="whitespace-pre-wrap">{n.text}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        <Textarea
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder={`Write a note about ${playerName}…`}
+          rows={3}
+          maxLength={5000}
+          data-testid="input-admin-new-note"
+        />
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            onClick={() => postMut.mutate()}
+            disabled={!text.trim() || postMut.isPending}
+            data-testid="button-admin-post-note"
+          >
+            <Send className="h-3.5 w-3.5 mr-2" /> {postMut.isPending ? "Sending…" : "Post note"}
+          </Button>
+        </div>
+      </div>
+    </div>
   );
 }

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -6,6 +6,8 @@ import { Label } from "@/components/ui/label";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+import { Textarea } from "@/components/ui/textarea";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
@@ -15,13 +17,20 @@ import {
   normalizePhone, formatPhone, formatDateFull, formatIsoStartEnd, isWithin24h,
   todayISO, addDays, formatDateLong, formatTime,
 } from "@/lib/scheduling";
-import { Lock, Search, Pencil } from "lucide-react";
+import { Lock, Search, Pencil, Camera, Trash2, Send } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
   parentName: string; playerName: string; phone: string; email: string; notes: string;
 };
-type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string };
+type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string; photoPath: string };
+type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; createdAt: number };
+
+const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+
+function initialsFor(name: string): string {
+  return (name || "?").trim().split(/\s+/).slice(0, 2).map(p => p[0] || "").join("").toUpperCase() || "?";
+}
 
 export default function MyAppointments() {
   const [emailInput, setEmailInput] = useState("");
@@ -121,13 +130,16 @@ export default function MyAppointments() {
             </Alert>
           ) : (
             <>
-              <div className="flex items-center justify-between flex-wrap gap-2">
-                <div className="text-sm text-muted-foreground">
-                  Showing appointments for{" "}
-                  <span className="text-foreground font-medium">
-                    {data.profile.playerName}
-                  </span>{" "}
-                  · {formatPhone(data.profile.phone)} · {data.profile.email}
+              <div className="flex items-center justify-between flex-wrap gap-3">
+                <div className="flex items-center gap-3">
+                  <PhotoUploader profile={data.profile} />
+                  <div className="text-sm text-muted-foreground">
+                    Showing appointments for{" "}
+                    <span className="text-foreground font-medium">
+                      {data.profile.playerName}
+                    </span>
+                    <div className="text-xs">{formatPhone(data.profile.phone)} · {data.profile.email}</div>
+                  </div>
                 </div>
                 <EditProfileDialog profile={data.profile} />
               </div>
@@ -146,6 +158,8 @@ export default function MyAppointments() {
                   ))}
                 </div>
               </Section>
+
+              <CoachNotesThread profile={data.profile} />
 
               {past.length > 0 && (
                 <Section title="Past">
@@ -387,5 +401,176 @@ function RescheduleDialog({ booking }: { booking: Booking }) {
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function PhotoUploader({ profile }: { profile: Profile }) {
+  const fileRef = useRef<HTMLInputElement>(null);
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [uploading, setUploading] = useState(false);
+
+  async function onPick(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.size > 5 * 1024 * 1024) {
+      toast({ variant: "destructive", title: "Photo too large", description: "Please pick an image under 5 MB." });
+      return;
+    }
+    setUploading(true);
+    try {
+      const fd = new FormData();
+      fd.append("photo", file);
+      fd.append("proofEmail", profile.email);
+      const r = await fetch(`${API_BASE}/api/profile/${profile.id}/photo`, {
+        method: "POST", body: fd, credentials: "include",
+      });
+      if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+      qc.invalidateQueries({ queryKey: ["/api/my-bookings-by-email"] });
+      toast({ title: "Photo updated" });
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Couldn't upload", description: err?.message || "Try a different image." });
+    } finally {
+      setUploading(false);
+      if (fileRef.current) fileRef.current.value = "";
+    }
+  }
+
+  async function onRemove() {
+    if (!confirm("Remove the player photo?")) return;
+    try {
+      const r = await fetch(`${API_BASE}/api/profile/${profile.id}/photo?proofEmail=${encodeURIComponent(profile.email)}`, {
+        method: "DELETE", credentials: "include",
+      });
+      if (!r.ok) throw new Error((await r.text()) || `HTTP ${r.status}`);
+      qc.invalidateQueries({ queryKey: ["/api/my-bookings-by-email"] });
+      toast({ title: "Photo removed" });
+    } catch (err: any) {
+      toast({ variant: "destructive", title: "Couldn't remove", description: err?.message });
+    }
+  }
+
+  return (
+    <div className="flex flex-col items-center gap-1">
+      <button
+        type="button"
+        onClick={() => fileRef.current?.click()}
+        className="relative group"
+        data-testid="button-upload-photo"
+        disabled={uploading}
+        aria-label="Upload photo"
+      >
+        <Avatar className="h-16 w-16 ring-2 ring-border">
+          {profile.photoPath ? (
+            <AvatarImage src={profile.photoPath} alt={profile.playerName} data-testid="img-profile-photo" />
+          ) : null}
+          <AvatarFallback className="text-base">{initialsFor(profile.playerName)}</AvatarFallback>
+        </Avatar>
+        <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+          <Camera className="h-5 w-5 text-white" />
+        </div>
+      </button>
+      <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPick} data-testid="input-photo-file" />
+      {profile.photoPath ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="text-[11px] text-muted-foreground hover:text-destructive"
+          data-testid="button-remove-photo"
+        >
+          Remove photo
+        </button>
+      ) : (
+        <span className="text-[11px] text-muted-foreground">{uploading ? "Uploading…" : "Add photo"}</span>
+      )}
+    </div>
+  );
+}
+
+function CoachNotesThread({ profile }: { profile: Profile }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [text, setText] = useState("");
+
+  const { data, isLoading } = useQuery<{ notes: CoachingNote[] }>({
+    queryKey: ["/api/notes", profile.id, profile.email],
+    queryFn: async () => {
+      const r = await apiRequest("GET", `/api/notes/${profile.id}?proofEmail=${encodeURIComponent(profile.email)}`);
+      return r.json();
+    },
+    enabled: !!profile.email,
+  });
+
+  const postMut = useMutation({
+    mutationFn: async () => {
+      const body = { text: text.trim(), proofEmail: profile.email };
+      const r = await apiRequest("POST", `/api/notes/${profile.id}`, body);
+      return r.json();
+    },
+    onSuccess: () => {
+      setText("");
+      qc.invalidateQueries({ queryKey: ["/api/notes", profile.id] });
+      toast({ title: "Note posted", description: "Coach Skinner will be notified by email." });
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't post note", description: e.message }),
+  });
+
+  const notes = data?.notes ?? [];
+
+  return (
+    <section className="border rounded-lg p-4 space-y-3" data-testid="section-coach-notes">
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Coach notes</h2>
+        <p className="text-xs text-muted-foreground">Two-way thread between you and Coach Skinner. Both sides get an email when a new note is posted.</p>
+      </div>
+
+      <div className="space-y-2 max-h-80 overflow-y-auto">
+        {isLoading && <p className="text-sm text-muted-foreground">Loading notes…</p>}
+        {!isLoading && notes.length === 0 && (
+          <p className="text-sm text-muted-foreground">No notes yet. Drop a question or update for the coach below.</p>
+        )}
+        {notes.map(n => (
+          <div
+            key={n.id}
+            className={
+              "rounded-md p-3 text-sm " +
+              (n.author === "coach"
+                ? "bg-primary/10 border-l-4 border-primary"
+                : "bg-muted border-l-4 border-muted-foreground/30")
+            }
+            data-testid={`note-${n.id}`}
+          >
+            <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
+              <span className="font-medium">
+                {n.author === "coach" ? "Coach Skinner" : (profile.parentName || "You")}
+              </span>
+              <span>{new Date(n.createdAt).toLocaleString()}</span>
+            </div>
+            <div className="whitespace-pre-wrap">{n.text}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="space-y-2">
+        <Textarea
+          value={text}
+          onChange={e => setText(e.target.value)}
+          placeholder="Write a note for Coach Skinner…"
+          rows={3}
+          maxLength={5000}
+          data-testid="input-new-note"
+        />
+        <div className="flex justify-end">
+          <Button
+            size="sm"
+            onClick={() => postMut.mutate()}
+            disabled={!text.trim() || postMut.isPending}
+            data-testid="button-post-note"
+          >
+            <Send className="h-3.5 w-3.5 mr-2" /> {postMut.isPending ? "Sending…" : "Post note"}
+          </Button>
+        </div>
+      </div>
+    </section>
   );
 }

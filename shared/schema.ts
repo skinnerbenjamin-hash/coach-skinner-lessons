@@ -22,6 +22,7 @@ export const profiles = sqliteTable("profiles", {
   parentName: text("parent_name").notNull(),
   playerName: text("player_name").notNull(),
   notes: text("notes").notNull().default(""),
+  photoPath: text("photo_path").notNull().default(""),
   createdAt: integer("created_at").notNull(),
 });
 export const insertProfileSchema = createInsertSchema(profiles).omit({ id: true, createdAt: true });
@@ -52,6 +53,18 @@ export const insertDateOverrideSchema = createInsertSchema(dateOverrides).omit({
 export type InsertDateOverride = z.infer<typeof insertDateOverrideSchema>;
 export type DateOverride = typeof dateOverrides.$inferSelect;
 
+// Coaching notes thread between coach and parent. One row per message.
+export const coachingNotes = sqliteTable("coaching_notes", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  profileId: integer("profile_id").notNull(),
+  author: text("author").notNull(), // "coach" | "parent"
+  text: text("text").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+export const insertCoachingNoteSchema = createInsertSchema(coachingNotes).omit({ id: true, createdAt: true });
+export type InsertCoachingNote = z.infer<typeof insertCoachingNoteSchema>;
+export type CoachingNote = typeof coachingNotes.$inferSelect;
+
 // Helper to normalize a phone number to digits only (so "(317) 555-1234" == "3175551234").
 export function normalizePhone(p: string) { return (p || "").replace(/\D+/g, ""); }
 
@@ -74,4 +87,5 @@ export type BookingWithProfile = Booking & {
   phone: string;
   email: string;
   notes: string;
+  photoPath: string;
 };

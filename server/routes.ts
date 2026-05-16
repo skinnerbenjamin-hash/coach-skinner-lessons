@@ -1,4 +1,4 @@
-import type { Express } from "express";
+import type { Express, Request } from "express";
 import type { Server } from 'node:http';
 import { storage } from "./storage";
 import {
@@ -8,6 +8,11 @@ import {
 import type { Booking, BookingWithProfile } from "@shared/schema";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import multer from "multer";
+import sharp from "sharp";
+import path from "node:path";
+import fs from "node:fs";
+import express from "express";
 import {
   scheduleRemindersForBooking, cancelRemindersForBooking,
   rescheduleRemindersForBooking, listReminders, startReminderLoop,
@@ -27,6 +32,25 @@ const MAX_GAP_MIN = 30;          // gaps <= this between busy blocks count as "o
 const CANCEL_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h cutoff
 const MAX_BOOKING_DAYS = 30; // customers can book up to ~1 month ahead
 const MAX_BOOKING_WINDOW_MS = MAX_BOOKING_DAYS * 24 * 60 * 60 * 1000;
+
+// --- Uploads (photos for Phase 1) ---
+const UPLOAD_DIR = process.env.UPLOAD_DIR || "./uploads";
+const PHOTO_DIR = path.join(UPLOAD_DIR, "photos");
+try { fs.mkdirSync(PHOTO_DIR, { recursive: true }); } catch {}
+const photoUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5MB
+  fileFilter: (_req, file, cb) => {
+    if (/^image\//.test(file.mimetype)) cb(null, true);
+    else cb(new Error("Only image uploads are allowed."));
+  },
+});
+function isAdminReq(req: Request): boolean { return isAuthed(req); }
+function matchesProofEmail(profileEmail: string, proof: string): boolean {
+  const a = (profileEmail || "").trim().toLowerCase();
+  const b = (proof || "").trim().toLowerCase();
+  return !!a && a === b;
+}
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toIso(date: string, time: string) { return `${date}T${time}`; }
@@ -703,6 +727,162 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const result = await sendSms(to, `Test from your booking app — ${coachName} SMS is working.`);
     res.json(result);
   });
+  // ===== Photo uploads (profile pictures) =====
+  // Serve uploaded photos publicly (read-only)
+  app.use("/uploads/photos", express.static(PHOTO_DIR, {
+    maxAge: "7d",
+    setHeaders: (res) => { res.setHeader("Cache-Control", "public, max-age=604800"); },
+  }));
+
+  // Upload or replace a profile photo. Admin OR customer with matching proofEmail.
+  app.post("/api/profile/:id/photo", photoUpload.single("photo"), async (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const profile = storage.getProfileById(id);
+      if (!profile) return res.status(404).json({ error: "Profile not found" });
+      if (!isAdminReq(req)) {
+        const proof = String((req.body && req.body.proofEmail) || "");
+        if (!matchesProofEmail(profile.email, proof)) {
+          return res.status(403).json({ error: "Verification failed. Please match the email on file." });
+        }
+      }
+      if (!req.file) return res.status(400).json({ error: "No file uploaded" });
+
+      // Resize to max 400x400 jpeg, save with random filename
+      const filename = `${id}-${randomUUID()}.jpg`;
+      const fullPath = path.join(PHOTO_DIR, filename);
+      await sharp(req.file.buffer)
+        .rotate() // honor EXIF orientation
+        .resize(400, 400, { fit: "cover", position: "center" })
+        .jpeg({ quality: 85 })
+        .toFile(fullPath);
+
+      // Delete old photo if present
+      if (profile.photoPath) {
+        const oldName = path.basename(profile.photoPath);
+        const oldPath = path.join(PHOTO_DIR, oldName);
+        try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch {}
+      }
+
+      const publicPath = `/uploads/photos/${filename}`;
+      const updated = storage.updateProfile(id, { photoPath: publicPath });
+      res.json({ ok: true, photoPath: publicPath, profile: updated });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || "Upload failed" });
+    }
+  });
+
+  // Delete a profile photo. Admin OR customer with matching proofEmail.
+  app.delete("/api/profile/:id/photo", (req, res) => {
+    const id = Number(req.params.id);
+    const profile = storage.getProfileById(id);
+    if (!profile) return res.status(404).json({ error: "Profile not found" });
+    if (!isAdminReq(req)) {
+      const proof = String(req.query.proofEmail || "");
+      if (!matchesProofEmail(profile.email, proof)) {
+        return res.status(403).json({ error: "Verification failed. Please match the email on file." });
+      }
+    }
+    if (profile.photoPath) {
+      const oldName = path.basename(profile.photoPath);
+      const oldPath = path.join(PHOTO_DIR, oldName);
+      try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch {}
+    }
+    const updated = storage.updateProfile(id, { photoPath: "" });
+    res.json({ ok: true, profile: updated });
+  });
+
+  // ===== Coaching notes thread =====
+  // List notes for a profile. Admin OR customer with matching proofEmail.
+  app.get("/api/notes/:profileId", (req, res) => {
+    const profileId = Number(req.params.profileId);
+    const profile = storage.getProfileById(profileId);
+    if (!profile) return res.status(404).json({ error: "Profile not found" });
+    if (!isAdminReq(req)) {
+      const proof = String(req.query.proofEmail || "");
+      if (!matchesProofEmail(profile.email, proof)) {
+        return res.status(403).json({ error: "Verification failed." });
+      }
+    }
+    res.json({ notes: storage.getNotesForProfile(profileId) });
+  });
+
+  // Post a note. Admin posts as "coach"; customer (with proofEmail) posts as "parent".
+  // Sends an email alert to the OTHER party.
+  app.post("/api/notes/:profileId", async (req, res) => {
+    const profileId = Number(req.params.profileId);
+    const profile = storage.getProfileById(profileId);
+    if (!profile) return res.status(404).json({ error: "Profile not found" });
+
+    const text = String(req.body?.text || "").trim();
+    if (!text) return res.status(400).json({ error: "Note text is required." });
+    if (text.length > 5000) return res.status(400).json({ error: "Note is too long (5000 char max)." });
+
+    const admin = isAdminReq(req);
+    let author: "coach" | "parent";
+    if (admin) {
+      author = "coach";
+    } else {
+      const proof = String(req.body?.proofEmail || "");
+      if (!matchesProofEmail(profile.email, proof)) {
+        return res.status(403).json({ error: "Verification failed. Please match the email on file." });
+      }
+      author = "parent";
+    }
+
+    const note = storage.addNote({ profileId, author, text });
+
+    // Fire-and-forget email alert to the OTHER party
+    const coachName = getSetting("coachName") || "Coach Skinner";
+    const coachEmail = getSetting("coachEmail");
+    const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
+    const brand = "#1f5a37";
+    const safeText = text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
+    const playerLabel = profile.playerName || profile.parentName || "player";
+
+    (async () => {
+      try {
+        if (author === "coach" && profile.email) {
+          // Notify the parent
+          await sendEmail({
+            to: profile.email,
+            subject: `New note from ${coachName} about ${playerLabel}`,
+            text: `${coachName} posted a new note in ${playerLabel}'s coaching thread:\n\n${text}\n\nReply at: ${manageUrl}`,
+            html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+              <h2 style="color:${brand};margin:0 0 8px">New note from ${coachName}</h2>
+              <p style="margin:0 0 16px;color:#555">About <strong>${playerLabel}</strong></p>
+              <div style="background:#f7f8f6;border-left:4px solid ${brand};padding:14px 16px;border-radius:6px;white-space:pre-wrap">${safeText}</div>
+              <p style="margin:20px 0 0"><a href="${manageUrl}" style="background:${brand};color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;display:inline-block">Reply to ${coachName}</a></p>
+              <p style="margin:24px 0 0;color:#888;font-size:13px">You're receiving this because ${coachName} posted a coaching note for ${playerLabel}.</p>
+            </div>`,
+          });
+        } else if (author === "parent" && coachEmail) {
+          // Notify the coach
+          await sendEmail({
+            to: coachEmail,
+            subject: `New note from ${profile.parentName || "a parent"} about ${playerLabel}`,
+            text: `${profile.parentName || "A parent"} posted a new note about ${playerLabel}:\n\n${text}\n\nReply at: ${manageUrl}`,
+            html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+              <h2 style="color:${brand};margin:0 0 8px">New note from ${profile.parentName || "a parent"}</h2>
+              <p style="margin:0 0 16px;color:#555">About <strong>${playerLabel}</strong></p>
+              <div style="background:#f7f8f6;border-left:4px solid ${brand};padding:14px 16px;border-radius:6px;white-space:pre-wrap">${safeText}</div>
+              <p style="margin:20px 0 0"><a href="${manageUrl}" style="background:${brand};color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;display:inline-block">Open admin</a></p>
+            </div>`,
+          });
+        }
+      } catch (e) { console.error("note email failed:", e); }
+    })();
+
+    res.json({ ok: true, note });
+  });
+
+  // Delete a note. Admin only (simplest; matches scope).
+  app.delete("/api/notes/:noteId", requireAdmin, (req, res) => {
+    const id = Number(req.params.noteId);
+    storage.deleteNote(id);
+    res.json({ ok: true });
+  });
+
   app.post("/api/settings/test-email", requireAdmin, async (_req, res) => {
     const to = getSetting("coachEmail");
     if (!to) return res.status(400).json({ error: "Set coach email first" });
