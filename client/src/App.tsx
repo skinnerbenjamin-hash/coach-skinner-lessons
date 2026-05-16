@@ -10,10 +10,12 @@ import MyAppointments from "@/pages/MyAppointments";
 import Admin from "@/pages/Admin";
 import Resources from "@/pages/Resources";
 import { Header } from "@/components/Header";
+import { TenantTheme } from "@/components/TenantTheme";
 
 function AppRouter() {
   return (
     <div className="min-h-screen bg-background">
+      <TenantTheme />
       <Header />
       <Switch>
         <Route path="/" component={Book} />
