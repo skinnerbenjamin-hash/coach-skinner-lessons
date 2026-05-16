@@ -8,6 +8,7 @@ import NotFound from "@/pages/not-found";
 import Book from "@/pages/Book";
 import MyAppointments from "@/pages/MyAppointments";
 import Admin from "@/pages/Admin";
+import Resources from "@/pages/Resources";
 import { Header } from "@/components/Header";
 
 function AppRouter() {
@@ -17,6 +18,7 @@ function AppRouter() {
       <Switch>
         <Route path="/" component={Book} />
         <Route path="/my-appointments" component={MyAppointments} />
+        <Route path="/resources" component={Resources} />
         <Route path="/admin" component={Admin} />
         <Route component={NotFound} />
       </Switch>

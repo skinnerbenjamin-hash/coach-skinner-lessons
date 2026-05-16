@@ -26,6 +26,9 @@ export function Header() {
           >
             My appointments
           </Link>
+          <Link href="/resources" className={linkCls("/resources")} data-testid="link-nav-resources">
+            Resources
+          </Link>
           <Link href="/admin" className={linkCls("/admin")} data-testid="link-nav-admin">
             Admin
           </Link>

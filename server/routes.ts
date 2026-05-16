@@ -22,7 +22,9 @@ import { getAllSettings, getSetting, setSettings, sendBookingEmail, sendEmail } 
 import {
   seedDefaultAdmin, checkLogin, logout, requireAdmin, isAuthed,
   setSessionCookie, clearSessionCookie, getTokenFromReq, updateCredentials, getAdminPhone,
+  listAdminUsers, addAdminUser, deleteAdminUser,
 } from "./auth";
+import { insertResourceSchema, RESOURCE_CATEGORIES } from "@shared/schema";
 
 startReminderLoop();
 seedDefaultAdmin("9079527860", "1qaz!QAZ");
@@ -43,6 +45,25 @@ const photoUpload = multer({
   fileFilter: (_req, file, cb) => {
     if (/^image\//.test(file.mimetype)) cb(null, true);
     else cb(new Error("Only image uploads are allowed."));
+  },
+});
+
+// Resource library uploads (PDFs and images)
+const RESOURCE_DIR = path.join(UPLOAD_DIR, "resources");
+try { fs.mkdirSync(RESOURCE_DIR, { recursive: true }); } catch {}
+const resourceUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, RESOURCE_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || "").toLowerCase().replace(/[^.a-z0-9]/g, "") || ".bin";
+      const safe = Math.random().toString(36).slice(2) + "-" + Date.now() + ext;
+      cb(null, safe);
+    },
+  }),
+  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
+  fileFilter: (_req, file, cb) => {
+    if (file.mimetype === "application/pdf" || /^image\//.test(file.mimetype)) cb(null, true);
+    else cb(new Error("Only PDF or image uploads are allowed."));
   },
 });
 function isAdminReq(req: Request): boolean { return isAuthed(req); }
@@ -933,6 +954,97 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       icsFilename: "test.ics",
     });
     res.json(result);
+  });
+
+  // ===== Resource library =====
+  // Serve uploaded resource files publicly (gated by app at the API/UI level)
+  app.use("/uploads/resources", express.static(RESOURCE_DIR, {
+    maxAge: "7d",
+    setHeaders: (res) => { res.setHeader("Cache-Control", "public, max-age=604800"); },
+  }));
+
+  // Public-but-gated: any signed-up parent (proves email) OR admin can list resources
+  app.get("/api/resources", (req, res) => {
+    const proof = String(req.query.proofEmail || "").trim().toLowerCase();
+    if (!isAdminReq(req)) {
+      if (!proof) return res.status(401).json({ error: "Sign up or sign in to view resources." });
+      const prof = storage.getProfileByEmail(proof);
+      if (!prof) return res.status(403).json({ error: "We couldn't find a profile with that email. Book your first lesson to get access." });
+    }
+    const list = storage.getResources();
+    res.json({ resources: list, categories: RESOURCE_CATEGORIES });
+  });
+
+  // Admin: create a resource (link, or upload)
+  app.post("/api/admin/resources", requireAdmin, resourceUpload.single("file"), (req, res) => {
+    try {
+      const body = req.body || {};
+      const type = String(body.type || "");
+      const category = String(body.category || "general");
+      const title = String(body.title || "").trim();
+      const description = String(body.description || "").trim();
+      const urlIn = String(body.url || "").trim();
+      if (!title) return res.status(400).json({ error: "Title is required" });
+      if (!["pdf", "link", "image"].includes(type)) return res.status(400).json({ error: "Invalid type" });
+      const validCats = RESOURCE_CATEGORIES.map(c => c.id);
+      if (!validCats.includes(category as any)) return res.status(400).json({ error: "Invalid category" });
+
+      let url = "";
+      let filePath = "";
+      if (type === "link") {
+        if (!/^https?:\/\//i.test(urlIn)) return res.status(400).json({ error: "Link must start with http:// or https://" });
+        url = urlIn;
+      } else {
+        if (!req.file) return res.status(400).json({ error: "File is required" });
+        filePath = req.file.filename;
+        url = `/uploads/resources/${req.file.filename}`;
+      }
+      const parsed = insertResourceSchema.parse({ type, category, title, description, url, filePath });
+      const r = storage.createResource(parsed);
+      res.json({ resource: r });
+    } catch (e: any) {
+      // Clean up uploaded file if validation failed
+      if (req.file) { try { fs.unlinkSync(path.join(RESOURCE_DIR, req.file.filename)); } catch {} }
+      res.status(400).json({ error: e?.message || "Couldn't create resource" });
+    }
+  });
+
+  app.delete("/api/admin/resources/:id", requireAdmin, (req, res) => {
+    const id = Number(req.params.id);
+    const r = storage.getResourceById(id);
+    if (!r) return res.status(404).json({ error: "Not found" });
+    if (r.filePath) {
+      try { fs.unlinkSync(path.join(RESOURCE_DIR, r.filePath)); } catch {}
+    }
+    storage.deleteResource(id);
+    res.json({ ok: true });
+  });
+
+  // ===== Admin team management =====
+  app.get("/api/admin/team", requireAdmin, (_req, res) => {
+    res.json({ admins: listAdminUsers() });
+  });
+
+  app.post("/api/admin/team", requireAdmin, (req, res) => {
+    try {
+      const phone = String(req.body?.phone || "");
+      const name = String(req.body?.name || "");
+      const password = String(req.body?.password || "");
+      const user = addAdminUser({ phone, name, password });
+      res.json({ admin: user });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || "Couldn't add admin" });
+    }
+  });
+
+  app.delete("/api/admin/team/:id", requireAdmin, (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      deleteAdminUser(id);
+      res.json({ ok: true });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || "Couldn't remove admin" });
+    }
   });
 
   return httpServer;

@@ -65,6 +65,35 @@ export const insertCoachingNoteSchema = createInsertSchema(coachingNotes).omit({
 export type InsertCoachingNote = z.infer<typeof insertCoachingNoteSchema>;
 export type CoachingNote = typeof coachingNotes.$inferSelect;
 
+// Resource library: handouts, links, photos shared with signed-up families.
+// type: "pdf" | "link" | "image"
+// category: "hitting" | "pitching" | "fielding" | "catching" | "baserunning" | "strength" | "mental" | "general"
+export const resources = sqliteTable("resources", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  type: text("type").notNull(),
+  category: text("category").notNull(),
+  title: text("title").notNull(),
+  description: text("description").notNull().default(""),
+  url: text("url").notNull().default(""),       // external URL for "link", or served path for uploads
+  filePath: text("file_path").notNull().default(""), // disk filename for pdf/image uploads
+  createdAt: integer("created_at").notNull(),
+});
+export const insertResourceSchema = createInsertSchema(resources).omit({ id: true, createdAt: true });
+export type InsertResource = z.infer<typeof insertResourceSchema>;
+export type Resource = typeof resources.$inferSelect;
+
+export const RESOURCE_CATEGORIES = [
+  { id: "hitting", label: "Hitting" },
+  { id: "pitching", label: "Pitching" },
+  { id: "fielding", label: "Fielding" },
+  { id: "catching", label: "Catching" },
+  { id: "baserunning", label: "Baserunning" },
+  { id: "strength", label: "Strength & conditioning" },
+  { id: "mental", label: "Mental game" },
+  { id: "general", label: "General" },
+] as const;
+export type ResourceCategory = typeof RESOURCE_CATEGORIES[number]["id"];
+
 // Helper to normalize a phone number to digits only (so "(317) 555-1234" == "3175551234").
 export function normalizePhone(p: string) { return (p || "").replace(/\D+/g, ""); }
 

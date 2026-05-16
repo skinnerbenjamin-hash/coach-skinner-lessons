@@ -17,6 +17,16 @@ sqlite.exec(`
     hash TEXT NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS admin_users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    phone TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL DEFAULT '',
+    salt TEXT NOT NULL,
+    hash TEXT NOT NULL,
+    is_owner INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
   CREATE TABLE IF NOT EXISTS admin_sessions (
     token TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL,
@@ -43,14 +53,85 @@ function normalizePhone(p: string) {
 
 // --- Seed default admin on first boot ---
 export function seedDefaultAdmin(phone: string, password: string) {
-  const existing = sqlite.prepare(`SELECT id FROM admin_credentials WHERE id=1`).get();
-  if (existing) return;
+  const np = normalizePhone(phone);
+  const existingLegacy = sqlite.prepare(`SELECT id FROM admin_credentials WHERE id=1`).get();
+  if (!existingLegacy) {
+    const salt = randomBytes(16).toString("hex");
+    const hash = hashPassword(password, salt);
+    sqlite.prepare(
+      `INSERT INTO admin_credentials (id, phone, salt, hash, updated_at) VALUES (1, ?, ?, ?, ?)`
+    ).run(np, salt, hash, Date.now());
+    console.log(`[auth] seeded default admin (legacy) for phone ${np}`);
+  }
+  // Mirror to multi-admin table
+  const existingUser = sqlite.prepare(`SELECT id FROM admin_users WHERE phone=?`).get(np);
+  if (!existingUser) {
+    // Copy the legacy row's salt/hash if available so the same password keeps working
+    const legacy = sqlite.prepare(`SELECT salt, hash FROM admin_credentials WHERE id=1`).get() as any;
+    let salt = legacy?.salt;
+    let hash = legacy?.hash;
+    if (!salt || !hash) {
+      salt = randomBytes(16).toString("hex");
+      hash = hashPassword(password, salt);
+    }
+    const now = Date.now();
+    sqlite.prepare(
+      `INSERT INTO admin_users (phone, name, salt, hash, is_owner, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)`
+    ).run(np, "Coach Skinner", salt, hash, now, now);
+    console.log(`[auth] seeded owner admin for phone ${np}`);
+  } else {
+    // Make sure owner flag is set
+    sqlite.prepare(`UPDATE admin_users SET is_owner=1 WHERE phone=?`).run(np);
+  }
+}
+
+// --- Multi-admin management ---
+export type AdminUser = {
+  id: number;
+  phone: string;
+  name: string;
+  isOwner: boolean;
+  createdAt: number;
+  updatedAt: number;
+};
+
+function rowToAdminUser(row: any): AdminUser {
+  return {
+    id: row.id,
+    phone: row.phone,
+    name: row.name,
+    isOwner: !!row.is_owner,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+export function listAdminUsers(): AdminUser[] {
+  const rows = sqlite.prepare(`SELECT * FROM admin_users ORDER BY is_owner DESC, created_at ASC`).all() as any[];
+  return rows.map(rowToAdminUser);
+}
+
+export function addAdminUser(input: { phone: string; name: string; password: string }): AdminUser {
+  const np = normalizePhone(input.phone);
+  if (!np || np.length < 7) throw new Error("Phone number is required");
+  if (!input.password || input.password.length < 6) throw new Error("Password must be at least 6 characters");
+  const existing = sqlite.prepare(`SELECT id FROM admin_users WHERE phone=?`).get(np);
+  if (existing) throw new Error("An admin with that phone already exists");
   const salt = randomBytes(16).toString("hex");
-  const hash = hashPassword(password, salt);
+  const hash = hashPassword(input.password, salt);
+  const now = Date.now();
   sqlite.prepare(
-    `INSERT INTO admin_credentials (id, phone, salt, hash, updated_at) VALUES (1, ?, ?, ?, ?)`
-  ).run(normalizePhone(phone), salt, hash, Date.now());
-  console.log(`[auth] seeded default admin for phone ${normalizePhone(phone)}`);
+    `INSERT INTO admin_users (phone, name, salt, hash, is_owner, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)`
+  ).run(np, input.name || "", salt, hash, now, now);
+  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE phone=?`).get(np);
+  return rowToAdminUser(row);
+}
+
+export function deleteAdminUser(id: number) {
+  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE id=?`).get(id) as any;
+  if (!row) return;
+  if (row.is_owner) throw new Error("Cannot remove the owner admin");
+  sqlite.prepare(`DELETE FROM admin_users WHERE id=?`).run(id);
 }
 
 // --- Credential change ---
@@ -78,16 +159,25 @@ export function getAdminPhone(): string {
 
 // --- Login / sessions ---
 export function checkLogin(phone: string, password: string): { ok: true; token: string } | { ok: false } {
-  const row = sqlite.prepare(`SELECT * FROM admin_credentials WHERE id=1`).get() as any;
-  if (!row) return { ok: false };
-  if (normalizePhone(phone) !== row.phone) return { ok: false };
-  if (!verifyPassword(password, row.salt, row.hash)) return { ok: false };
+  const np = normalizePhone(phone);
+  // First check multi-admin table
+  const adminRow = sqlite.prepare(`SELECT * FROM admin_users WHERE phone=?`).get(np) as any;
+  let verified = false;
+  if (adminRow && verifyPassword(password, adminRow.salt, adminRow.hash)) {
+    verified = true;
+  } else {
+    // Fallback to legacy single-admin table
+    const legacy = sqlite.prepare(`SELECT * FROM admin_credentials WHERE id=1`).get() as any;
+    if (legacy && np === legacy.phone && verifyPassword(password, legacy.salt, legacy.hash)) {
+      verified = true;
+    }
+  }
+  if (!verified) return { ok: false };
   const token = randomBytes(32).toString("hex");
   const now = Date.now();
   sqlite.prepare(
     `INSERT INTO admin_sessions (token, created_at, expires_at) VALUES (?, ?, ?)`
   ).run(token, now, now + SESSION_TTL_MS);
-  // Opportunistic cleanup of expired sessions
   sqlite.prepare(`DELETE FROM admin_sessions WHERE expires_at < ?`).run(now);
   return { ok: true, token };
 }

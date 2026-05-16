@@ -1,5 +1,5 @@
 import {
-  availability, bookings, dateOverrides, profiles, coachingNotes, normalizePhone,
+  availability, bookings, dateOverrides, profiles, coachingNotes, resources, normalizePhone,
 } from '@shared/schema';
 import type {
   Availability, InsertAvailability,
@@ -7,6 +7,7 @@ import type {
   DateOverride, InsertDateOverride,
   Profile, InsertProfile, BookingWithProfile,
   CoachingNote, InsertCoachingNote,
+  Resource, InsertResource,
 } from '@shared/schema';
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -54,6 +55,17 @@ sqlite.exec(`
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS coaching_notes_profile_idx ON coaching_notes(profile_id);
+  CREATE TABLE IF NOT EXISTS resources (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    type TEXT NOT NULL,
+    category TEXT NOT NULL,
+    title TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    url TEXT NOT NULL DEFAULT '',
+    file_path TEXT NOT NULL DEFAULT '',
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX IF NOT EXISTS resources_category_idx ON resources(category);
 `);
 
 // Migration: add email column to existing profiles tables that pre-date the email feature.
@@ -188,6 +200,20 @@ export class DatabaseStorage {
   deleteBooking(id: number) { db.delete(bookings).where(eq(bookings.id, id)).run(); }
   deleteBookingGroup(groupId: string) {
     db.delete(bookings).where(eq(bookings.bookingGroup, groupId)).run();
+  }
+
+  // resources
+  getResources(): Resource[] {
+    return db.select().from(resources).orderBy(desc(resources.createdAt)).all();
+  }
+  getResourceById(id: number): Resource | undefined {
+    return db.select().from(resources).where(eq(resources.id, id)).get();
+  }
+  createResource(input: InsertResource): Resource {
+    return db.insert(resources).values({ ...input, createdAt: Date.now() }).returning().get();
+  }
+  deleteResource(id: number) {
+    db.delete(resources).where(eq(resources.id, id)).run();
   }
 
   // expand booking with profile data

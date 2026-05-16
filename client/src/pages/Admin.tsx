@@ -16,7 +16,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
-import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search } from "lucide-react";
+import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
@@ -58,6 +58,8 @@ export default function Admin() {
         <TabsList>
           <TabsTrigger value="bookings" data-testid="tab-bookings">Bookings</TabsTrigger>
           <TabsTrigger value="members" data-testid="tab-members">Members</TabsTrigger>
+          <TabsTrigger value="resources" data-testid="tab-resources">Resources</TabsTrigger>
+          <TabsTrigger value="team" data-testid="tab-team">Team</TabsTrigger>
           <TabsTrigger value="availability" data-testid="tab-availability">Availability</TabsTrigger>
           <TabsTrigger value="overrides" data-testid="tab-overrides">Blackouts</TabsTrigger>
           <TabsTrigger value="reminders" data-testid="tab-reminders">SMS reminders</TabsTrigger>
@@ -65,6 +67,8 @@ export default function Admin() {
         </TabsList>
         <TabsContent value="bookings"><BookingsPanel /></TabsContent>
         <TabsContent value="members"><MembersPanel /></TabsContent>
+        <TabsContent value="resources"><ResourcesPanel /></TabsContent>
+        <TabsContent value="team"><TeamPanel /></TabsContent>
         <TabsContent value="availability"><AvailabilityPanel /></TabsContent>
         <TabsContent value="overrides"><OverridesPanel /></TabsContent>
         <TabsContent value="reminders"><RemindersPanel /></TabsContent>
@@ -1036,6 +1040,341 @@ function MembersPanel() {
           )}
         </SheetContent>
       </Sheet>
+    </div>
+  );
+}
+
+// ===== Resources =====
+
+const RESOURCE_CATEGORIES = [
+  { id: "hitting", label: "Hitting" },
+  { id: "pitching", label: "Pitching" },
+  { id: "fielding", label: "Fielding" },
+  { id: "catching", label: "Catching" },
+  { id: "baserunning", label: "Baserunning" },
+  { id: "strength", label: "Strength & conditioning" },
+  { id: "mental", label: "Mental game" },
+  { id: "general", label: "General" },
+] as const;
+
+type Resource = {
+  id: number;
+  type: "pdf" | "link" | "image";
+  category: string;
+  title: string;
+  description: string;
+  url: string;
+  filePath: string;
+  createdAt: number;
+};
+
+const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
+
+function ResourcesPanel() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<{ resources: Resource[] }>({ queryKey: ["/api/resources"] });
+  const [filterCat, setFilterCat] = useState<string>("all");
+
+  // form state
+  const [type, setType] = useState<"link" | "pdf" | "image">("link");
+  const [category, setCategory] = useState<string>("general");
+  const [title, setTitle] = useState("");
+  const [description, setDescription] = useState("");
+  const [url, setUrl] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function resetForm() {
+    setTitle(""); setDescription(""); setUrl(""); setFile(null);
+  }
+
+  async function submit() {
+    if (!title.trim()) return toast({ variant: "destructive", title: "Title is required" });
+    if (type === "link" && !/^https?:\/\//i.test(url.trim())) {
+      return toast({ variant: "destructive", title: "Enter a valid http/https URL" });
+    }
+    if (type !== "link" && !file) return toast({ variant: "destructive", title: "Pick a file to upload" });
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("type", type);
+      fd.append("category", category);
+      fd.append("title", title.trim());
+      fd.append("description", description.trim());
+      if (type === "link") fd.append("url", url.trim());
+      else if (file) fd.append("file", file);
+      const r = await fetch(`${API_BASE}/api/admin/resources`, { method: "POST", credentials: "include", body: fd });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.error || "Couldn't add resource");
+      }
+      resetForm();
+      qc.invalidateQueries({ queryKey: ["/api/resources"] });
+      toast({ title: "Resource added" });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Couldn't add", description: e?.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const del = useMutation({
+    mutationFn: async (id: number) => { await apiRequest("DELETE", `/api/admin/resources/${id}`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/resources"] });
+      toast({ title: "Removed" });
+    },
+  });
+
+  const resources = data?.resources ?? [];
+  const filtered = filterCat === "all" ? resources : resources.filter(r => r.category === filterCat);
+
+  function catLabel(id: string) { return RESOURCE_CATEGORIES.find(c => c.id === id)?.label || id; }
+  function iconFor(t: string) {
+    if (t === "pdf") return <FileText className="h-4 w-4" />;
+    if (t === "image") return <ImageIcon className="h-4 w-4" />;
+    return <ExternalLink className="h-4 w-4" />;
+  }
+
+  return (
+    <div className="space-y-6 mt-4">
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <h2 className="text-base font-semibold">Add a resource</h2>
+          <p className="text-sm text-muted-foreground">
+            Anything you add here is visible to families who have signed up. The resource library is separate from the notes thread — things shared in notes stay private to each player.
+          </p>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div>
+              <Label>Type</Label>
+              <Select value={type} onValueChange={(v) => setType(v as any)}>
+                <SelectTrigger data-testid="select-resource-type"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="link">External link (article, video, website)</SelectItem>
+                  <SelectItem value="pdf">PDF handout</SelectItem>
+                  <SelectItem value="image">Photo / image</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <Label>Skill area</Label>
+              <Select value={category} onValueChange={setCategory}>
+                <SelectTrigger data-testid="select-resource-category"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {RESOURCE_CATEGORIES.map(c => (
+                    <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="sm:col-span-2">
+              <Label>Title</Label>
+              <Input value={title} onChange={e => setTitle(e.target.value)} placeholder="e.g. Hitting drill — high tee" data-testid="input-resource-title" />
+            </div>
+            <div className="sm:col-span-2">
+              <Label>Description (optional)</Label>
+              <Textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} placeholder="Short notes for families…" data-testid="input-resource-description" />
+            </div>
+            {type === "link" ? (
+              <div className="sm:col-span-2">
+                <Label>Link URL</Label>
+                <Input value={url} onChange={e => setUrl(e.target.value)} placeholder="https://…" data-testid="input-resource-url" />
+              </div>
+            ) : (
+              <div className="sm:col-span-2">
+                <Label>{type === "pdf" ? "PDF file" : "Image file"}</Label>
+                <Input
+                  type="file"
+                  accept={type === "pdf" ? "application/pdf" : "image/*"}
+                  onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+                  data-testid="input-resource-file"
+                />
+                <p className="text-xs text-muted-foreground mt-1">Max 25MB.</p>
+              </div>
+            )}
+          </div>
+          <div className="flex justify-end">
+            <Button onClick={submit} disabled={busy} data-testid="button-add-resource">
+              <Upload className="h-4 w-4 mr-2" /> {busy ? "Adding…" : "Add resource"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h2 className="text-base font-semibold">Library ({resources.length})</h2>
+        <div className="w-56">
+          <Select value={filterCat} onValueChange={setFilterCat}>
+            <SelectTrigger data-testid="select-filter-category"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All skill areas</SelectItem>
+              {RESOURCE_CATEGORIES.map(c => (
+                <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+
+      {isLoading && <p className="text-sm text-muted-foreground">Loading resources…</p>}
+      {!isLoading && filtered.length === 0 && (
+        <p className="text-sm text-muted-foreground">No resources yet in this category.</p>
+      )}
+
+      <div className="grid sm:grid-cols-2 gap-3">
+        {filtered.map(r => (
+          <div key={r.id} className="border rounded-md p-3 flex items-start justify-between gap-3" data-testid={`row-resource-${r.id}`}>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                {iconFor(r.type)}
+                <Badge variant="secondary" className="text-[10px]">{catLabel(r.category)}</Badge>
+              </div>
+              <a
+                href={r.url}
+                target="_blank"
+                rel="noreferrer"
+                className="block font-medium hover:underline mt-1 break-words"
+                data-testid={`link-resource-${r.id}`}
+              >
+                {r.title}
+              </a>
+              {r.description && <p className="text-xs text-muted-foreground mt-1">{r.description}</p>}
+            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => { if (confirm(`Remove “${r.title}”?`)) del.mutate(r.id); }}
+              data-testid={`button-delete-resource-${r.id}`}
+            >
+              <Trash2 className="h-4 w-4" />
+            </Button>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// ===== Team / multi-admin =====
+
+type AdminUser = { id: number; phone: string; name: string; isOwner: boolean; createdAt: number };
+
+function TeamPanel() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<{ admins: AdminUser[] }>({ queryKey: ["/api/admin/team"] });
+  const [phone, setPhone] = useState("");
+  const [name, setName] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+
+  const add = useMutation({
+    mutationFn: async () => {
+      const r = await apiRequest("POST", "/api/admin/team", { phone: phone.trim(), name: name.trim(), password });
+      return r.json();
+    },
+    onSuccess: () => {
+      setPhone(""); setName(""); setPassword("");
+      qc.invalidateQueries({ queryKey: ["/api/admin/team"] });
+      toast({ title: "Admin added", description: "They can now sign in at /#/admin with their phone and password." });
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't add admin", description: e?.message?.replace(/^\d+:\s*/, "") }),
+  });
+
+  const del = useMutation({
+    mutationFn: async (id: number) => { await apiRequest("DELETE", `/api/admin/team/${id}`); },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/admin/team"] });
+      toast({ title: "Admin removed" });
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't remove", description: e?.message?.replace(/^\d+:\s*/, "") }),
+  });
+
+  const admins = data?.admins ?? [];
+
+  return (
+    <div className="space-y-6 mt-4">
+      <Card>
+        <CardContent className="p-5 space-y-3">
+          <h2 className="text-base font-semibold flex items-center gap-2">
+            <UserPlus className="h-4 w-4" /> Add another admin
+          </h2>
+          <p className="text-sm text-muted-foreground">
+            Anyone you add here can sign in at /#/admin with the phone and password you set and will have full admin access. They cannot remove the owner account.
+          </p>
+          <div className="grid sm:grid-cols-3 gap-3">
+            <div>
+              <Label>Name</Label>
+              <Input value={name} onChange={e => setName(e.target.value)} placeholder="Assistant coach" data-testid="input-admin-name" />
+            </div>
+            <div>
+              <Label>Phone *</Label>
+              <Input value={phone} onChange={e => setPhone(e.target.value)} placeholder="(317) 555-1234" inputMode="tel" data-testid="input-admin-phone" />
+            </div>
+            <div>
+              <Label>Password *</Label>
+              <div className="relative">
+                <Input
+                  type={showPw ? "text" : "password"}
+                  value={password}
+                  onChange={e => setPassword(e.target.value)}
+                  placeholder="min 6 characters"
+                  data-testid="input-admin-password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw(!showPw)}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground"
+                  aria-label="Toggle password visibility"
+                >
+                  {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            <Button
+              onClick={() => add.mutate()}
+              disabled={!phone.trim() || !password || add.isPending}
+              data-testid="button-add-admin"
+            >
+              {add.isPending ? "Adding…" : "Add admin"}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <div>
+        <h2 className="text-base font-semibold mb-2">Current admins ({admins.length})</h2>
+        {isLoading && <p className="text-sm text-muted-foreground">Loading…</p>}
+        <div className="space-y-2">
+          {admins.map(a => (
+            <div key={a.id} className="border rounded-md p-3 flex items-center justify-between" data-testid={`row-admin-${a.id}`}>
+              <div className="flex items-center gap-3">
+                {a.isOwner ? <Crown className="h-4 w-4 text-primary" /> : <ShieldCheck className="h-4 w-4 text-muted-foreground" />}
+                <div>
+                  <div className="font-medium">
+                    {a.name || "(no name)"}
+                    {a.isOwner && <Badge variant="secondary" className="ml-2 text-[10px]">Owner</Badge>}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{formatPhone(a.phone)} · added {new Date(a.createdAt).toLocaleDateString()}</div>
+                </div>
+              </div>
+              {!a.isOwner && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => { if (confirm(`Remove ${a.name || a.phone} as admin?`)) del.mutate(a.id); }}
+                  data-testid={`button-delete-admin-${a.id}`}
+                >
+                  <Trash2 className="h-4 w-4" />
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
