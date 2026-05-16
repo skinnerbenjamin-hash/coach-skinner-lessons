@@ -267,6 +267,7 @@ export default function Book() {
                 variant="outline"
                 size="icon"
                 onClick={() => setWeekStart(addDays(weekStart, 7))}
+                disabled={addDays(weekStart, 7) > addDays(todayISO(), 30)}
                 data-testid="button-next-week"
               >
                 <ChevronRight className="h-4 w-4" />

@@ -25,6 +25,8 @@ seedDefaultAdmin("9079527860", "1qaz!QAZ");
 const SLOT_MIN = 30;
 const MAX_GAP_MIN = 30;          // gaps <= this between busy blocks count as "orphan"
 const CANCEL_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h cutoff
+const MAX_BOOKING_DAYS = 30; // customers can book up to ~1 month ahead
+const MAX_BOOKING_WINDOW_MS = MAX_BOOKING_DAYS * 24 * 60 * 60 * 1000;
 
 function pad(n: number) { return String(n).padStart(2, "0"); }
 function toIso(date: string, time: string) { return `${date}T${time}`; }
@@ -235,6 +237,11 @@ function isWithin24h(iso: string): boolean {
   return start - Date.now() < CANCEL_WINDOW_MS;
 }
 
+function isBeyondMaxWindow(iso: string): boolean {
+  const start = isoToLocalDate(iso).getTime();
+  return start - Date.now() > MAX_BOOKING_WINDOW_MS;
+}
+
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   // --- Health check (used by Render) ---
   app.get("/healthz", (_req, res) => res.status(200).send("ok"));
@@ -357,7 +364,17 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const start = String(req.query.start || "");
     const end = String(req.query.end || "");
     if (!start || !end) return res.status(400).json({ error: "start and end required" });
-    res.json({ days: availabilityForRange(start, end) });
+    // Cap end at MAX_BOOKING_DAYS from now for non-admin requests
+    const isAdmin = !!(req as any).session?.admin;
+    let effectiveEnd = end;
+    if (!isAdmin) {
+      const maxEndMs = Date.now() + MAX_BOOKING_WINDOW_MS;
+      const requestedEndMs = new Date(end).getTime();
+      if (requestedEndMs > maxEndMs) {
+        effectiveEnd = new Date(maxEndMs).toISOString();
+      }
+    }
+    res.json({ days: availabilityForRange(start, effectiveEnd), maxBookingDays: MAX_BOOKING_DAYS });
   });
 
   // Profiles
@@ -392,6 +409,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // can't book inside 24h
     if (slots.some(s => isWithin24h(s))) {
       return res.status(400).json({ error: "Bookings must be at least 24 hours in advance." });
+    }
+    // can't book more than MAX_BOOKING_DAYS ahead
+    if (slots.some(s => isBeyondMaxWindow(s))) {
+      return res.status(400).json({ error: `Bookings can be made up to ${MAX_BOOKING_DAYS} days in advance.` });
     }
     // collision check
     const existing = storage.getBookingsByStarts(slots);
@@ -502,8 +523,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!isAdmin && isWithin24h(b.start)) {
       return res.status(400).json({ error: "Within 24 hours — please contact the coach to cancel." });
     }
+    // Capture profile/details before delete so we can email
+    const profile = storage.getProfileById(b.profileId);
     cancelRemindersForBooking(id);
     storage.deleteBooking(id);
+
+    // Fire-and-forget notifications
+    const coachName = getSetting("coachName") || "Coach Skinner";
+    const coachEmail = getSetting("coachEmail");
+    const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
+    const dateLong = formatDateLong(isoDate(b.start));
+    const timeStr = formatTime(b.start.split("T")[1]);
+    const whoCancelled = isAdmin ? coachName : (profile?.parentName || "The parent");
+
+    if (coachEmail && !isAdmin && profile) {
+      sendEmail({
+        to: coachEmail,
+        subject: `Booking CANCELLED: ${profile.playerName} — ${dateLong} ${timeStr}`,
+        text: `${profile.parentName} cancelled a lesson.\n\nPlayer: ${profile.playerName}\nParent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\n\nWas scheduled: ${dateLong} at ${timeStr}\n\nThe slot is now open again.`,
+        html: `<p><b>${profile.parentName}</b> cancelled a lesson.</p><ul><li><b>Player:</b> ${profile.playerName}</li><li><b>Parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li></ul><p><b>Was scheduled:</b> ${dateLong} at ${timeStr}</p><p>The slot is now open again.</p>`,
+      }).catch(e => console.error("coach cancel email error:", e));
+    }
+
+    if (profile && profile.email) {
+      sendEmail({
+        to: profile.email,
+        subject: `Cancelled: ${profile.playerName}'s lesson — ${dateLong}`,
+        text: `${coachName} — your lesson has been cancelled.\n\nPlayer: ${profile.playerName}\nWas scheduled: ${dateLong} at ${timeStr}\nCancelled by: ${whoCancelled}\n\nWant to rebook? ${manageUrl}`,
+        html: `<!doctype html><html><body style="margin:0;padding:0;background:#f4f6f4;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f1a14;"><div style="max-width:560px;margin:0 auto;padding:24px 16px;"><div style="background:#ffffff;border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,0.06);"><div style="font-size:20px;font-weight:600;margin-bottom:12px;color:#1f5a37;">${coachName} · Softball Lessons</div><p style="font-size:16px;margin:0 0 12px 0;">This is a confirmation that <b>${profile.playerName}'s</b> lesson has been cancelled.</p><div style="background:#fff4f4;border-left:4px solid #c0392b;padding:12px 16px;border-radius:6px;margin:12px 0;"><div style="font-weight:600;font-size:14px;margin-bottom:4px;">Cancelled session</div><div style="font-size:15px;line-height:1.5;">${dateLong} at ${timeStr}</div><div style="font-size:13px;color:#7a857e;margin-top:6px;">Cancelled by ${whoCancelled}</div></div><div style="text-align:center;margin:24px 0;"><a href="${manageUrl}" style="display:inline-block;background:#1f5a37;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:16px;">Book another session</a></div></div></div></body></html>`,
+      }).catch(e => console.error("parent cancel email error:", e));
+    }
+
     res.json({ ok: true });
   });
 
@@ -520,15 +570,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!isAdmin && isWithin24h(newStart)) {
       return res.status(400).json({ error: "New time must be at least 24 hours from now." });
     }
+    if (!isAdmin && isBeyondMaxWindow(newStart)) {
+      return res.status(400).json({ error: `New time must be within ${MAX_BOOKING_DAYS} days.` });
+    }
     // collision
     const existing = storage.getBookingsByStarts([newStart]).filter(x => x.id !== id);
     if (existing.length) return res.status(409).json({ error: "That time is already booked." });
     // ensure newStart is a valid available slot
     const validSlots = new Set(slotsForDate(isoDate(newStart)));
     if (!validSlots.has(newStart)) return res.status(400).json({ error: "Not an open time slot." });
+    const oldStart = b.start;
     storage.updateBookingStart(id, newStart);
     const profile = storage.getProfileById(b.profileId);
     if (profile) rescheduleRemindersForBooking(id, newStart, profile.phone, profile.playerName, profile.email);
+
+    // Fire-and-forget notifications
+    const coachName = getSetting("coachName") || "Coach Skinner";
+    const coachEmail = getSetting("coachEmail");
+    const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
+    const oldDateLong = formatDateLong(isoDate(oldStart));
+    const oldTime = formatTime(oldStart.split("T")[1]);
+    const newDateLong = formatDateLong(isoDate(newStart));
+    const newTime = formatTime(newStart.split("T")[1]);
+    const whoChanged = isAdmin ? coachName : (profile?.parentName || "The parent");
+
+    if (coachEmail && !isAdmin && profile) {
+      sendEmail({
+        to: coachEmail,
+        subject: `Booking RESCHEDULED: ${profile.playerName} — now ${newDateLong} ${newTime}`,
+        text: `${profile.parentName} rescheduled a lesson.\n\nPlayer: ${profile.playerName}\nParent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\n\nOld: ${oldDateLong} at ${oldTime}\nNew: ${newDateLong} at ${newTime}`,
+        html: `<p><b>${profile.parentName}</b> rescheduled a lesson.</p><ul><li><b>Player:</b> ${profile.playerName}</li><li><b>Parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li></ul><p><b>Old:</b> ${oldDateLong} at ${oldTime}<br><b>New:</b> ${newDateLong} at ${newTime}</p>`,
+      }).catch(e => console.error("coach reschedule email error:", e));
+    }
+
+    if (profile && profile.email) {
+      sendEmail({
+        to: profile.email,
+        subject: `Rescheduled: ${profile.playerName}'s lesson — now ${newDateLong}`,
+        text: `${coachName} — your lesson has been rescheduled.\n\nPlayer: ${profile.playerName}\nOld: ${oldDateLong} at ${oldTime}\nNew: ${newDateLong} at ${newTime}\nRescheduled by: ${whoChanged}\n\nManage your appointments: ${manageUrl}`,
+        html: `<!doctype html><html><body style="margin:0;padding:0;background:#f4f6f4;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f1a14;"><div style="max-width:560px;margin:0 auto;padding:24px 16px;"><div style="background:#ffffff;border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,0.06);"><div style="font-size:20px;font-weight:600;margin-bottom:12px;color:#1f5a37;">${coachName} · Softball Lessons</div><p style="font-size:16px;margin:0 0 12px 0;"><b>${profile.playerName}'s</b> lesson has been rescheduled.</p><div style="background:#fff8ec;border-left:4px solid #d18e1c;padding:12px 16px;border-radius:6px;margin:12px 0;"><div style="font-size:13px;color:#7a857e;text-decoration:line-through;">${oldDateLong} at ${oldTime}</div><div style="font-weight:600;font-size:15px;margin-top:6px;color:#1f5a37;">→ ${newDateLong} at ${newTime}</div><div style="font-size:13px;color:#7a857e;margin-top:6px;">Changed by ${whoChanged}</div></div><div style="text-align:center;margin:24px 0;"><a href="${manageUrl}" style="display:inline-block;background:#1f5a37;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:16px;">Manage your appointments</a></div></div></div></body></html>`,
+      }).catch(e => console.error("parent reschedule email error:", e));
+    }
+
     res.json({ ok: true });
   });
 
