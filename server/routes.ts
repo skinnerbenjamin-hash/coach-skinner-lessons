@@ -311,6 +311,16 @@ function isBeyondMaxWindow(iso: string): boolean {
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
   // --- Health check (used by Render) ---
   app.get("/healthz", (_req, res) => res.status(200).send("ok"));
+
+  // TEMP: Admin DB backup endpoint (pre-multi-tenant migration safety).
+  // Remove after backup is captured.
+  app.get("/api/admin/db-backup", requireAdmin, (_req, res) => {
+    const dbPath = process.env.DB_PATH || "data.db";
+    if (!fs.existsSync(dbPath)) return res.status(404).json({ error: "db not found" });
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename="data-backup-${Date.now()}.db"`);
+    fs.createReadStream(dbPath).pipe(res);
+  });
   // --- Auth ---
   app.post("/api/auth/login", (req, res) => {
     const { phone, password } = req.body || {};
