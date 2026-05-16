@@ -16,6 +16,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
+import { useTenantLabels } from "@/hooks/use-tenant";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
 import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil } from "lucide-react";
 
@@ -180,6 +181,7 @@ function SignOutButton() {
 function AddBookingDialog() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const labels = useTenantLabels();
   const [open, setOpen] = useState(false);
   const [memberId, setMemberId] = useState<string>("new");
   const [parentName, setParentName] = useState("");
@@ -258,13 +260,13 @@ function AddBookingDialog() {
 
         <div className="space-y-3">
           <div className="space-y-1">
-            <Label>Player</Label>
+            <Label>{labels.attendee}</Label>
             <Select value={memberId} onValueChange={pickMember}>
               <SelectTrigger data-testid="select-admin-booking-member">
-                <SelectValue placeholder="Pick a player or add new" />
+                <SelectValue placeholder={`Pick a ${labels.attendee.toLowerCase()} or add new`} />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="new">+ Add new player</SelectItem>
+                <SelectItem value="new">+ Add new {labels.attendee.toLowerCase()}</SelectItem>
                 {members.map(m => (
                   <SelectItem key={m.id} value={String(m.id)}>
                     {m.playerName} ({m.parentName})
@@ -276,11 +278,11 @@ function AddBookingDialog() {
 
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
-              <Label htmlFor="ab-player">Player name</Label>
+              <Label htmlFor="ab-player">{labels.attendee} name</Label>
               <Input id="ab-player" value={playerName} onChange={e => setPlayerName(e.target.value)} data-testid="input-admin-booking-player" />
             </div>
             <div className="space-y-1">
-              <Label htmlFor="ab-parent">Parent name</Label>
+              <Label htmlFor="ab-parent">{labels.booker} name</Label>
               <Input id="ab-parent" value={parentName} onChange={e => setParentName(e.target.value)} data-testid="input-admin-booking-parent" />
             </div>
           </div>
@@ -943,6 +945,7 @@ type MemberRow = {
 function MembersPanel() {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const labels = useTenantLabels();
   const { data, isLoading } = useQuery<{ profiles: MemberRow[] }>({ queryKey: ["/api/admin/profiles"] });
   const [query, setQuery] = useState("");
   const [sortKey, setSortKey] = useState<"createdAt" | "playerName" | "bookingCount" | "lastBookingStart">("createdAt");
@@ -998,7 +1001,7 @@ function MembersPanel() {
 
   function downloadCsv() {
     const rows = filtered;
-    const header = ["Player", "Parent", "Phone", "Email", "Total bookings", "Upcoming", "Last booked", "Focus / notes", "Signed up"];
+    const header = [labels.attendee, labels.booker, "Phone", "Email", "Total bookings", "Upcoming", "Last booked", "Focus / notes", "Signed up"];
     const esc = (v: any) => {
       const s = v == null ? "" : String(v);
       if (/[",\n]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
@@ -1076,9 +1079,9 @@ function MembersPanel() {
               <tr>
                 <th className="text-left px-3 py-2 w-12"></th>
                 <th className="text-left px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("playerName")}>
-                  Player {sortKey === "playerName" && (sortDir === "asc" ? "▲" : "▼")}
+                  {labels.attendee} {sortKey === "playerName" && (sortDir === "asc" ? "▲" : "▼")}
                 </th>
-                <th className="text-left px-3 py-2">Parent</th>
+                <th className="text-left px-3 py-2">{labels.booker}</th>
                 <th className="text-left px-3 py-2">Phone</th>
                 <th className="text-left px-3 py-2">Email</th>
                 <th className="text-right px-3 py-2 cursor-pointer select-none" onClick={() => toggleSort("bookingCount")}>
@@ -1686,6 +1689,7 @@ function AdminNoteAttachment({ note }: { note: CoachingNote }) {
 }
 
 function AdminCoachNotes({ profileId, playerName, parentName }: { profileId: number; playerName: string; parentName: string }) {
+  const labels = useTenantLabels();
   const qc = useQueryClient();
   const { toast } = useToast();
   const [text, setText] = useState("");
@@ -1764,7 +1768,7 @@ function AdminCoachNotes({ profileId, playerName, parentName }: { profileId: num
           >
             <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
               <span className="font-medium">
-                {n.author === "coach" ? "You (Coach)" : (parentName || "Parent")}
+                {n.author === "coach" ? "You (Coach)" : (parentName || labels.booker)}
               </span>
               <span className="flex items-center gap-2">
                 <span>{new Date(n.createdAt).toLocaleString()}</span>

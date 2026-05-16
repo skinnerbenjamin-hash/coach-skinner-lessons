@@ -325,6 +325,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       name: req.tenant?.name ?? null,
       sport: req.tenant?.sport ?? null,
       primaryColor: req.tenant?.primary_color ?? null,
+      logoPath: req.tenant?.logo_path ?? null,
+      heroPath: req.tenant?.hero_path ?? null,
+      tagline: req.tenant?.tagline ?? null,
+      about: req.tenant?.about ?? null,
+      contactPhone: req.tenant?.contact_phone ?? null,
+      contactEmail: req.tenant?.contact_email ?? null,
+      contactLocation: req.tenant?.contact_location ?? null,
       bookerLabel: req.tenant?.booker_label ?? null,
       attendeeLabel: req.tenant?.attendee_label ?? null,
     });

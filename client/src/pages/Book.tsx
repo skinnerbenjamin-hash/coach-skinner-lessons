@@ -19,6 +19,7 @@ import {
   Check, AlertTriangle, X, Camera, Search,
 } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import { useTenantLabels } from "@/hooks/use-tenant";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -36,6 +37,7 @@ type Step = "profile" | "pick" | "review" | "done";
 
 export default function Book() {
   const { toast } = useToast();
+  const labels = useTenantLabels(); // { booker: "Parent", attendee: "Player" } or tenant overrides
   const [step, setStep] = useState<Step>("profile");
 
   // profile
@@ -270,14 +272,14 @@ export default function Book() {
 
         <Card className="mt-4">
           <CardContent className="p-6 space-y-4">
-            <h1 className="text-xl font-semibold">New here? Tell us about the player</h1>
+            <h1 className="text-xl font-semibold">New here? Tell us about the {labels.attendee.toLowerCase()}</h1>
             <p className="text-sm text-muted-foreground">
               We'll save this info so you can look up appointments later, reschedule, or
               book more sessions without re-typing.
             </p>
             <div className="grid sm:grid-cols-2 gap-4">
               <div>
-                <Label htmlFor="phone">Parent phone *</Label>
+                <Label htmlFor="phone">{labels.booker} phone *</Label>
                 <Input
                   id="phone"
                   data-testid="input-phone"
@@ -294,7 +296,7 @@ export default function Book() {
                 )}
               </div>
               <div>
-                <Label htmlFor="email">Parent email *</Label>
+                <Label htmlFor="email">{labels.booker} email *</Label>
                 <Input
                   id="email"
                   data-testid="input-email"
@@ -310,7 +312,7 @@ export default function Book() {
                 </p>
               </div>
               <div>
-                <Label htmlFor="parent">Parent name *</Label>
+                <Label htmlFor="parent">{labels.booker} name *</Label>
                 <Input
                   id="parent"
                   data-testid="input-parent-name"
@@ -320,7 +322,7 @@ export default function Book() {
                 />
               </div>
               <div>
-                <Label htmlFor="player">Player name *</Label>
+                <Label htmlFor="player">{labels.attendee} name *</Label>
                 <Input
                   id="player"
                   data-testid="input-player-name"
@@ -347,9 +349,9 @@ export default function Book() {
                 <div className="relative">
                   <Avatar className="h-16 w-16">
                     {pendingPhotoPreview ? (
-                      <AvatarImage src={pendingPhotoPreview} alt="Player" />
+                      <AvatarImage src={pendingPhotoPreview} alt={labels.attendee} />
                     ) : existingPhotoPath ? (
-                      <AvatarImage src={existingPhotoPath} alt="Player" />
+                      <AvatarImage src={existingPhotoPath} alt={labels.attendee} />
                     ) : null}
                     <AvatarFallback className="bg-muted">
                       <Camera className="h-5 w-5 text-muted-foreground" />
@@ -357,9 +359,9 @@ export default function Book() {
                   </Avatar>
                 </div>
                 <div className="flex-1">
-                  <Label className="text-sm font-medium">Player photo (optional)</Label>
+                  <Label className="text-sm font-medium">{labels.attendee} photo (optional)</Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Helps Coach recognize {playerName || "your player"} on lesson day. You can add or change this anytime later.
+                    Helps Coach recognize {playerName || `your ${labels.attendee.toLowerCase()}`} on lesson day. You can add or change this anytime later.
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <label className="cursor-pointer">
@@ -520,7 +522,7 @@ export default function Book() {
 
           <Card>
             <CardContent className="p-6 space-y-3">
-              <div className="text-sm text-muted-foreground">Player</div>
+              <div className="text-sm text-muted-foreground">{labels.attendee}</div>
               <div className="font-medium" data-testid="text-review-player">
                 {playerName} <span className="text-muted-foreground">·</span>{" "}
                 <span className="text-muted-foreground">{parentName} · {formatPhone(phone)}</span>

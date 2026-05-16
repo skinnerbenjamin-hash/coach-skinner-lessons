@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Textarea } from "@/components/ui/textarea";
+import { useTenant, useTenantLabels } from "@/hooks/use-tenant";
 import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
@@ -225,6 +226,7 @@ function BookingRow({ b, onCancel }: { b: Booking; onCancel: () => void }) {
 }
 
 function EditProfileDialog({ profile }: { profile: Profile }) {
+  const labels = useTenantLabels();
   const [open, setOpen] = useState(false);
   const [parentName, setParentName] = useState(profile.parentName);
   const [playerName, setPlayerName] = useState(profile.playerName);
@@ -283,11 +285,11 @@ function EditProfileDialog({ profile }: { profile: Profile }) {
         </DialogHeader>
         <div className="space-y-3">
           <div>
-            <Label htmlFor="edit-parent">Parent name</Label>
+            <Label htmlFor="edit-parent">{labels.booker} name</Label>
             <Input id="edit-parent" value={parentName} onChange={e => setParentName(e.target.value)} data-testid="input-edit-parent" />
           </div>
           <div>
-            <Label htmlFor="edit-player">Player name</Label>
+            <Label htmlFor="edit-player">{labels.attendee} name</Label>
             <Input id="edit-player" value={playerName} onChange={e => setPlayerName(e.target.value)} data-testid="input-edit-player" />
           </div>
           <div>
@@ -546,6 +548,8 @@ function NoteAttachment({ note }: { note: CoachingNote }) {
 function CoachNotesThread({ profile }: { profile: Profile }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { data: tenant } = useTenant();
+  const coachName = tenant?.name || "the coach";
   const [text, setText] = useState("");
   const [file, setFile] = useState<File | null>(null);
   const [linkUrl, setLinkUrl] = useState("");
@@ -586,7 +590,7 @@ function CoachNotesThread({ profile }: { profile: Profile }) {
       setShowLink(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
       qc.invalidateQueries({ queryKey: ["/api/notes", profile.id] });
-      toast({ title: "Note posted", description: "Coach Skinner will be notified by email." });
+      toast({ title: "Note posted", description: `${coachName} will be notified by email.` });
     },
     onError: (e: any) => toast({ variant: "destructive", title: "Couldn't post note", description: e.message }),
   });
@@ -598,7 +602,7 @@ function CoachNotesThread({ profile }: { profile: Profile }) {
     <section className="border rounded-lg p-4 space-y-3" data-testid="section-coach-notes">
       <div>
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Coach notes</h2>
-        <p className="text-xs text-muted-foreground">Two-way thread between you and Coach Skinner. Attach photos, videos, or YouTube links. Both sides get an email when a new note is posted.</p>
+        <p className="text-xs text-muted-foreground">Two-way thread between you and {coachName}. Attach photos, videos, or YouTube links. Both sides get an email when a new note is posted.</p>
       </div>
 
       <div className="space-y-2 max-h-96 overflow-y-auto">
@@ -619,7 +623,7 @@ function CoachNotesThread({ profile }: { profile: Profile }) {
           >
             <div className="flex items-center justify-between text-xs text-muted-foreground mb-1">
               <span className="font-medium">
-                {n.author === "coach" ? "Coach Skinner" : (profile.parentName || "You")}
+                {n.author === "coach" ? coachName : (profile.parentName || "You")}
               </span>
               <span>{new Date(n.createdAt).toLocaleString()}</span>
             </div>
@@ -633,7 +637,7 @@ function CoachNotesThread({ profile }: { profile: Profile }) {
         <Textarea
           value={text}
           onChange={e => setText(e.target.value)}
-          placeholder="Write a note for Coach Skinner (or just attach a video / photo)…"
+          placeholder={`Write a note for ${coachName} (or just attach a video / photo)…`}
           rows={3}
           maxLength={5000}
           data-testid="input-new-note"
