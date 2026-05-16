@@ -17,14 +17,14 @@ import {
   normalizePhone, formatPhone, formatDateFull, formatIsoStartEnd, isWithin24h,
   todayISO, addDays, formatDateLong, formatTime,
 } from "@/lib/scheduling";
-import { Lock, Search, Pencil, Camera, Trash2, Send } from "lucide-react";
+import { Lock, Search, Pencil, Camera, Trash2, Send, Paperclip, Link as LinkIcon, X, Image as ImageIcon, Video } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
   parentName: string; playerName: string; phone: string; email: string; notes: string;
 };
 type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string; photoPath: string };
-type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; createdAt: number };
+type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; mediaType: "image" | "video" | "link" | null; mediaPath: string | null; mediaUrl: string | null; createdAt: number };
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -512,10 +512,45 @@ function PhotoUploader({ profile }: { profile: Profile }) {
   );
 }
 
+function NoteAttachment({ note }: { note: CoachingNote }) {
+  if (note.mediaType === "image" && note.mediaPath) {
+    const src = `${API_BASE}/uploads/notes/${note.mediaPath}`;
+    return (
+      <a href={src} target="_blank" rel="noopener noreferrer" className="block mt-2">
+        <img src={src} alt="attachment" className="rounded-md max-h-72 w-auto border" />
+      </a>
+    );
+  }
+  if (note.mediaType === "video" && note.mediaPath) {
+    const src = `${API_BASE}/uploads/notes/${note.mediaPath}`;
+    return (
+      <video src={src} controls preload="metadata" className="rounded-md max-h-72 w-full mt-2 border bg-black" />
+    );
+  }
+  if (note.mediaType === "link" && note.mediaUrl) {
+    return (
+      <a
+        href={note.mediaUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="mt-2 inline-flex items-center gap-2 text-sm underline break-all"
+      >
+        <LinkIcon className="h-3.5 w-3.5 shrink-0" />
+        {note.mediaUrl}
+      </a>
+    );
+  }
+  return null;
+}
+
 function CoachNotesThread({ profile }: { profile: Profile }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [showLink, setShowLink] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data, isLoading } = useQuery<{ notes: CoachingNote[] }>({
     queryKey: ["/api/notes", profile.id, profile.email],
@@ -528,12 +563,28 @@ function CoachNotesThread({ profile }: { profile: Profile }) {
 
   const postMut = useMutation({
     mutationFn: async () => {
-      const body = { text: text.trim(), proofEmail: profile.email };
-      const r = await apiRequest("POST", `/api/notes/${profile.id}`, body);
+      const fd = new FormData();
+      fd.append("text", text.trim());
+      fd.append("proofEmail", profile.email);
+      if (file) fd.append("file", file);
+      if (linkUrl.trim()) fd.append("mediaUrl", linkUrl.trim());
+      const r = await fetch(`${API_BASE}/api/notes/${profile.id}`, {
+        method: "POST",
+        body: fd,
+        credentials: "include",
+      });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body?.error || body?.message || "Couldn't post note");
+      }
       return r.json();
     },
     onSuccess: () => {
       setText("");
+      setFile(null);
+      setLinkUrl("");
+      setShowLink(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       qc.invalidateQueries({ queryKey: ["/api/notes", profile.id] });
       toast({ title: "Note posted", description: "Coach Skinner will be notified by email." });
     },
@@ -541,18 +592,19 @@ function CoachNotesThread({ profile }: { profile: Profile }) {
   });
 
   const notes = data?.notes ?? [];
+  const canSubmit = !!(text.trim() || file || linkUrl.trim());
 
   return (
     <section className="border rounded-lg p-4 space-y-3" data-testid="section-coach-notes">
       <div>
         <h2 className="text-sm font-semibold uppercase tracking-wider text-muted-foreground">Coach notes</h2>
-        <p className="text-xs text-muted-foreground">Two-way thread between you and Coach Skinner. Both sides get an email when a new note is posted.</p>
+        <p className="text-xs text-muted-foreground">Two-way thread between you and Coach Skinner. Attach photos, videos, or YouTube links. Both sides get an email when a new note is posted.</p>
       </div>
 
-      <div className="space-y-2 max-h-80 overflow-y-auto">
+      <div className="space-y-2 max-h-96 overflow-y-auto">
         {isLoading && <p className="text-sm text-muted-foreground">Loading notes…</p>}
         {!isLoading && notes.length === 0 && (
-          <p className="text-sm text-muted-foreground">No notes yet. Drop a question or update for the coach below.</p>
+          <p className="text-sm text-muted-foreground">No notes yet. Drop a question, swing video, or update for the coach below.</p>
         )}
         {notes.map(n => (
           <div
@@ -571,7 +623,8 @@ function CoachNotesThread({ profile }: { profile: Profile }) {
               </span>
               <span>{new Date(n.createdAt).toLocaleString()}</span>
             </div>
-            <div className="whitespace-pre-wrap">{n.text}</div>
+            {n.text && <div className="whitespace-pre-wrap">{n.text}</div>}
+            <NoteAttachment note={n} />
           </div>
         ))}
       </div>
@@ -580,16 +633,60 @@ function CoachNotesThread({ profile }: { profile: Profile }) {
         <Textarea
           value={text}
           onChange={e => setText(e.target.value)}
-          placeholder="Write a note for Coach Skinner…"
+          placeholder="Write a note for Coach Skinner (or just attach a video / photo)…"
           rows={3}
           maxLength={5000}
           data-testid="input-new-note"
         />
-        <div className="flex justify-end">
+
+        {file && (
+          <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-xs">
+            <span className="truncate flex items-center gap-2">
+              {file.type.startsWith("video/") ? <Video className="h-3.5 w-3.5" /> : <ImageIcon className="h-3.5 w-3.5" />}
+              {file.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }}
+              className="text-muted-foreground hover:text-foreground"
+              data-testid="button-clear-attachment"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
+        {showLink && (
+          <Input
+            value={linkUrl}
+            onChange={e => setLinkUrl(e.target.value)}
+            placeholder="Paste a video or article link (https://…)"
+            data-testid="input-note-link"
+          />
+        )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,video/*"
+          className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0] || null; setFile(f); }}
+          data-testid="input-note-file"
+        />
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={() => fileInputRef.current?.click()} data-testid="button-attach-file">
+              <Paperclip className="h-3.5 w-3.5 mr-1.5" /> Photo / video
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => setShowLink(v => !v)} data-testid="button-attach-link">
+              <LinkIcon className="h-3.5 w-3.5 mr-1.5" /> {showLink ? "Hide link" : "Add link"}
+            </Button>
+          </div>
           <Button
             size="sm"
             onClick={() => postMut.mutate()}
-            disabled={!text.trim() || postMut.isPending}
+            disabled={!canSubmit || postMut.isPending}
             data-testid="button-post-note"
           >
             <Send className="h-3.5 w-3.5 mr-2" /> {postMut.isPending ? "Sending…" : "Post note"}

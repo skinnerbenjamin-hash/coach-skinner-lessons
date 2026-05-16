@@ -66,6 +66,23 @@ const resourceUpload = multer({
     else cb(new Error("Only PDF or image uploads are allowed."));
   },
 });
+const NOTES_DIR = path.join(UPLOAD_DIR, "notes");
+try { fs.mkdirSync(NOTES_DIR, { recursive: true }); } catch {}
+const noteUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, NOTES_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || "").toLowerCase().replace(/[^.a-z0-9]/g, "") || ".bin";
+      const safe = Math.random().toString(36).slice(2) + "-" + Date.now() + ext;
+      cb(null, safe);
+    },
+  }),
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100MB for video clips
+  fileFilter: (_req, file, cb) => {
+    if (/^image\//.test(file.mimetype) || /^video\//.test(file.mimetype)) cb(null, true);
+    else cb(new Error("Only image or video uploads are allowed."));
+  },
+});
 function isAdminReq(req: Request): boolean { return isAuthed(req); }
 function matchesProofEmail(profileEmail: string, proof: string): boolean {
   const a = (profileEmail || "").trim().toLowerCase();
@@ -828,16 +845,36 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ notes: storage.getNotesForProfile(profileId) });
   });
 
+  // Static file serving for note attachments. Path tokens are unguessable.
+  app.use("/uploads/notes", express.static(NOTES_DIR, {
+    setHeaders: (res) => { res.setHeader("Cache-Control", "public, max-age=31536000, immutable"); },
+  }));
+
   // Post a note. Admin posts as "coach"; customer (with proofEmail) posts as "parent".
+  // Accepts multipart/form-data with optional `file` (image/video) or `mediaUrl` (link).
   // Sends an email alert to the OTHER party.
-  app.post("/api/notes/:profileId", async (req, res) => {
+  app.post("/api/notes/:profileId", noteUpload.single("file"), async (req, res) => {
     const profileId = Number(req.params.profileId);
     const profile = storage.getProfileById(profileId);
-    if (!profile) return res.status(404).json({ error: "Profile not found" });
+    if (!profile) {
+      if (req.file) { try { fs.unlinkSync(path.join(NOTES_DIR, req.file.filename)); } catch {} }
+      return res.status(404).json({ error: "Profile not found" });
+    }
 
     const text = String(req.body?.text || "").trim();
-    if (!text) return res.status(400).json({ error: "Note text is required." });
-    if (text.length > 5000) return res.status(400).json({ error: "Note is too long (5000 char max)." });
+    const mediaUrlInput = String(req.body?.mediaUrl || "").trim();
+    const hasFile = !!req.file;
+    if (!text && !hasFile && !mediaUrlInput) {
+      return res.status(400).json({ error: "Add a message, attach a file, or paste a video link." });
+    }
+    if (text.length > 5000) {
+      if (req.file) { try { fs.unlinkSync(path.join(NOTES_DIR, req.file.filename)); } catch {} }
+      return res.status(400).json({ error: "Note is too long (5000 char max)." });
+    }
+    if (mediaUrlInput && !/^https?:\/\//i.test(mediaUrlInput)) {
+      if (req.file) { try { fs.unlinkSync(path.join(NOTES_DIR, req.file.filename)); } catch {} }
+      return res.status(400).json({ error: "Video link must start with http:// or https://" });
+    }
 
     const admin = isAdminReq(req);
     let author: "coach" | "parent";
@@ -846,12 +883,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     } else {
       const proof = String(req.body?.proofEmail || "");
       if (!matchesProofEmail(profile.email, proof)) {
+        if (req.file) { try { fs.unlinkSync(path.join(NOTES_DIR, req.file.filename)); } catch {} }
         return res.status(403).json({ error: "Verification failed. Please match the email on file." });
       }
       author = "parent";
     }
 
-    const note = storage.addNote({ profileId, author, text });
+    let mediaType: string | null = null;
+    let mediaPath: string | null = null;
+    let mediaUrl: string | null = null;
+    if (hasFile && req.file) {
+      mediaType = /^video\//.test(req.file.mimetype) ? "video" : "image";
+      mediaPath = req.file.filename;
+    } else if (mediaUrlInput) {
+      mediaType = "link";
+      mediaUrl = mediaUrlInput;
+    }
+
+    const note = storage.addNote({ profileId, author, text, mediaType, mediaPath, mediaUrl } as any);
 
     // Fire-and-forget email alert to the OTHER party
     const coachName = getSetting("coachName") || "Coach Skinner";
@@ -900,6 +949,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Delete a note. Admin only (simplest; matches scope).
   app.delete("/api/notes/:noteId", requireAdmin, (req, res) => {
     const id = Number(req.params.noteId);
+    const existing = storage.getNoteById(id);
+    if (existing?.mediaPath) {
+      try { fs.unlinkSync(path.join(NOTES_DIR, existing.mediaPath)); } catch {}
+    }
     storage.deleteNote(id);
     res.json({ ok: true });
   });

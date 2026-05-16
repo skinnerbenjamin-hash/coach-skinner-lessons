@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react"; 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -16,7 +16,7 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
-import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck } from "lucide-react";
+import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
@@ -24,7 +24,7 @@ type Booking = {
   parentName: string; playerName: string; phone: string; email: string; notes: string;
   photoPath: string;
 };
-type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; createdAt: number };
+type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; mediaType: "image" | "video" | "link" | null; mediaPath: string | null; mediaUrl: string | null; createdAt: number };
 
 function initialsFor(name: string): string {
   return (name || "?").trim().split(/\s+/).slice(0, 2).map(p => p[0] || "").join("").toUpperCase() || "?";
@@ -1388,10 +1388,38 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
+function AdminNoteAttachment({ note }: { note: CoachingNote }) {
+  if (note.mediaType === "image" && note.mediaPath) {
+    const src = `${API_BASE}/uploads/notes/${note.mediaPath}`;
+    return (
+      <a href={src} target="_blank" rel="noopener noreferrer" className="block mt-2">
+        <img src={src} alt="attachment" className="rounded-md max-h-72 w-auto border" />
+      </a>
+    );
+  }
+  if (note.mediaType === "video" && note.mediaPath) {
+    const src = `${API_BASE}/uploads/notes/${note.mediaPath}`;
+    return <video src={src} controls preload="metadata" className="rounded-md max-h-72 w-full mt-2 border bg-black" />;
+  }
+  if (note.mediaType === "link" && note.mediaUrl) {
+    return (
+      <a href={note.mediaUrl} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center gap-2 text-sm underline break-all">
+        <LinkIcon className="h-3.5 w-3.5 shrink-0" />
+        {note.mediaUrl}
+      </a>
+    );
+  }
+  return null;
+}
+
 function AdminCoachNotes({ profileId, playerName, parentName }: { profileId: number; playerName: string; parentName: string }) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const [text, setText] = useState("");
+  const [file, setFile] = useState<File | null>(null);
+  const [linkUrl, setLinkUrl] = useState("");
+  const [showLink, setShowLink] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const { data, isLoading } = useQuery<{ notes: CoachingNote[] }>({
     queryKey: ["/api/notes", profileId],
@@ -1403,11 +1431,23 @@ function AdminCoachNotes({ profileId, playerName, parentName }: { profileId: num
 
   const postMut = useMutation({
     mutationFn: async () => {
-      const r = await apiRequest("POST", `/api/notes/${profileId}`, { text: text.trim() });
+      const fd = new FormData();
+      fd.append("text", text.trim());
+      if (file) fd.append("file", file);
+      if (linkUrl.trim()) fd.append("mediaUrl", linkUrl.trim());
+      const r = await fetch(`${API_BASE}/api/notes/${profileId}`, { method: "POST", credentials: "include", body: fd });
+      if (!r.ok) {
+        const body = await r.json().catch(() => ({}));
+        throw new Error(body?.error || body?.message || "Couldn't post note");
+      }
       return r.json();
     },
     onSuccess: () => {
       setText("");
+      setFile(null);
+      setLinkUrl("");
+      setShowLink(false);
+      if (fileInputRef.current) fileInputRef.current.value = "";
       qc.invalidateQueries({ queryKey: ["/api/notes", profileId] });
       toast({ title: "Note posted", description: `${parentName || "The parent"} will be notified by email.` });
     },
@@ -1466,7 +1506,8 @@ function AdminCoachNotes({ profileId, playerName, parentName }: { profileId: num
                 </button>
               </span>
             </div>
-            <div className="whitespace-pre-wrap">{n.text}</div>
+            {n.text && <div className="whitespace-pre-wrap">{n.text}</div>}
+            <AdminNoteAttachment note={n} />
           </div>
         ))}
       </div>
@@ -1475,16 +1516,60 @@ function AdminCoachNotes({ profileId, playerName, parentName }: { profileId: num
         <Textarea
           value={text}
           onChange={e => setText(e.target.value)}
-          placeholder={`Write a note about ${playerName}…`}
+          placeholder={`Write a note about ${playerName} (or attach a photo / video)…`}
           rows={3}
           maxLength={5000}
           data-testid="input-admin-new-note"
         />
-        <div className="flex justify-end">
+
+        {file && (
+          <div className="flex items-center justify-between rounded-md border bg-muted/40 px-3 py-2 text-xs">
+            <span className="truncate flex items-center gap-2">
+              {file.type.startsWith("video/") ? <Video className="h-3.5 w-3.5" /> : <ImageIcon className="h-3.5 w-3.5" />}
+              {file.name}
+            </span>
+            <button
+              type="button"
+              onClick={() => { setFile(null); if (fileInputRef.current) fileInputRef.current.value = ""; }}
+              className="text-muted-foreground hover:text-foreground"
+              data-testid="button-admin-clear-attachment"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        )}
+
+        {showLink && (
+          <Input
+            value={linkUrl}
+            onChange={e => setLinkUrl(e.target.value)}
+            placeholder="Paste a video or article link (https://…)"
+            data-testid="input-admin-note-link"
+          />
+        )}
+
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*,video/*"
+          className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0] || null; setFile(f); }}
+          data-testid="input-admin-note-file"
+        />
+
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Button type="button" size="sm" variant="outline" onClick={() => fileInputRef.current?.click()} data-testid="button-admin-attach-file">
+              <Paperclip className="h-3.5 w-3.5 mr-1.5" /> Photo / video
+            </Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => setShowLink(v => !v)} data-testid="button-admin-attach-link">
+              <LinkIcon className="h-3.5 w-3.5 mr-1.5" /> {showLink ? "Hide link" : "Add link"}
+            </Button>
+          </div>
           <Button
             size="sm"
             onClick={() => postMut.mutate()}
-            disabled={!text.trim() || postMut.isPending}
+            disabled={!(text.trim() || file || linkUrl.trim()) || postMut.isPending}
             data-testid="button-admin-post-note"
           >
             <Send className="h-3.5 w-3.5 mr-2" /> {postMut.isPending ? "Sending…" : "Post note"}

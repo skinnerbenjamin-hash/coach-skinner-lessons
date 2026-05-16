@@ -6,16 +6,16 @@ export function Header() {
   const [loc] = useLocation();
   const linkCls = (href: string) =>
     cn(
-      "px-3 py-2 rounded-md text-sm font-medium hover-elevate",
+      "px-2 sm:px-3 py-2 rounded-md text-xs sm:text-sm font-medium hover-elevate whitespace-nowrap",
       loc === href ? "text-foreground" : "text-muted-foreground",
     );
   return (
     <header className="border-b bg-card">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6 py-3 flex items-center justify-between">
+      <div className="mx-auto max-w-6xl px-3 sm:px-6 py-3 flex items-center justify-between gap-2">
         <Link href="/" data-testid="link-home">
           <Logo />
         </Link>
-        <nav className="flex items-center gap-1">
+        <nav className="flex items-center gap-0.5 sm:gap-1">
           <Link href="/" className={linkCls("/")} data-testid="link-nav-book">
             Book
           </Link>
@@ -24,7 +24,8 @@ export function Header() {
             className={linkCls("/my-appointments")}
             data-testid="link-nav-my-appointments"
           >
-            My appointments
+            <span className="sm:hidden">My visits</span>
+            <span className="hidden sm:inline">My appointments</span>
           </Link>
           <Link href="/resources" className={linkCls("/resources")} data-testid="link-nav-resources">
             Resources

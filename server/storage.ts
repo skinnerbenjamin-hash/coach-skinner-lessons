@@ -52,6 +52,9 @@ sqlite.exec(`
     profile_id INTEGER NOT NULL,
     author TEXT NOT NULL,
     text TEXT NOT NULL,
+    media_type TEXT,
+    media_path TEXT,
+    media_url TEXT,
     created_at INTEGER NOT NULL
   );
   CREATE INDEX IF NOT EXISTS coaching_notes_profile_idx ON coaching_notes(profile_id);
@@ -78,6 +81,20 @@ try {
     sqlite.exec(`ALTER TABLE profiles ADD COLUMN photo_path TEXT NOT NULL DEFAULT ''`);
   }
 } catch (e) { console.error("profiles migration failed:", e); }
+
+// Migration: add media columns to existing coaching_notes table that pre-date attachments.
+try {
+  const cols = sqlite.prepare(`PRAGMA table_info(coaching_notes)`).all() as { name: string }[];
+  if (!cols.some(c => c.name === "media_type")) {
+    sqlite.exec(`ALTER TABLE coaching_notes ADD COLUMN media_type TEXT`);
+  }
+  if (!cols.some(c => c.name === "media_path")) {
+    sqlite.exec(`ALTER TABLE coaching_notes ADD COLUMN media_path TEXT`);
+  }
+  if (!cols.some(c => c.name === "media_url")) {
+    sqlite.exec(`ALTER TABLE coaching_notes ADD COLUMN media_url TEXT`);
+  }
+} catch (e) { console.error("coaching_notes migration failed:", e); }
 
 export const db = drizzle(sqlite);
 

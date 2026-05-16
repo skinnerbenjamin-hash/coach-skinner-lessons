@@ -59,6 +59,10 @@ export const coachingNotes = sqliteTable("coaching_notes", {
   profileId: integer("profile_id").notNull(),
   author: text("author").notNull(), // "coach" | "parent"
   text: text("text").notNull(),
+  // Optional attachment: "image" | "video" | "link" or null/empty for text-only.
+  mediaType: text("media_type"),
+  mediaPath: text("media_path"),   // disk path for uploads
+  mediaUrl: text("media_url"),     // external URL (e.g. YouTube)
   createdAt: integer("created_at").notNull(),
 });
 export const insertCoachingNoteSchema = createInsertSchema(coachingNotes).omit({ id: true, createdAt: true });
