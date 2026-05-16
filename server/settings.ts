@@ -47,8 +47,9 @@ export async function sendEmail(opts: {
   text: string;
   attachments?: { filename: string; content: string /* utf-8 string */ }[];
 }): Promise<{ ok: boolean; error?: string; dryRun?: boolean }> {
-  const apiKey = getSetting("resendApiKey");
-  const from = getSetting("resendFromEmail") || DEFAULTS.resendFromEmail;
+  // Env vars take precedence over DB settings (so Render-managed secrets work without admin config)
+  const apiKey = process.env.RESEND_API_KEY || getSetting("resendApiKey");
+  const from = process.env.RESEND_FROM || getSetting("resendFromEmail") || DEFAULTS.resendFromEmail;
   if (!apiKey) {
     console.log(`[email-dry-run] to=${opts.to} subject="${opts.subject}"`);
     return { ok: true, dryRun: true };

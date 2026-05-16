@@ -201,7 +201,7 @@ function icsForBookings(rows: BookingWithProfile[]) {
     "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//CoachSkinner//Lessons//EN",
     "CALSCALE:GREGORIAN", "METHOD:PUBLISH",
   ];
-  const manageUrl = (getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
+  const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
   for (const ev of events) {
     const date = isoDate(ev.startIso);
     const dtStart = date.replace(/-/g, "") + "T" + ev.startIso.split("T")[1].replace(":", "") + "00";
@@ -310,7 +310,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const coachName = getSetting("coachName") || "Coach Skinner";
       const dateLong = formatDateLong(date);
       const channel = (getSetting("reminderChannel") || "email").toLowerCase();
-      const manageUrl = (getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
+      const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
       for (const [_profileId, rows] of byProfile) {
         const phone = rows[0].phone;
         const email = rows[0].email;
@@ -411,7 +411,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const expanded = rows.map(r => storage.expandBooking(r));
     const ics = icsForBookings(expanded);
     const coachName = getSetting("coachName") || "Coach Skinner";
-    const manageUrl = (getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
+    const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
 
     // Coach notification email (fire-and-forget)
     const coachEmail = getSetting("coachEmail");
