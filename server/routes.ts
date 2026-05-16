@@ -909,10 +909,28 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Fire-and-forget email alert to the OTHER party
     const coachName = getSetting("coachName") || "Coach Skinner";
     const coachEmail = getSetting("coachEmail");
-    const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
+    const siteBase = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "");
+    const manageUrl = siteBase + "/#/my-appointments";
     const brand = "#1f5a37";
     const safeText = text.replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c] as string));
     const playerLabel = profile.playerName || profile.parentName || "player";
+
+    // Build a media block for the email. Email clients strip <video>, so we
+    // render a clickable thumbnail/button that opens the media in the browser.
+    let mediaBlockHtml = "";
+    let mediaBlockText = "";
+    if (mediaType === "image" && mediaPath) {
+      const imgUrl = `${siteBase}/uploads/notes/${mediaPath}`;
+      mediaBlockHtml = `<div style="margin-top:16px"><a href="${manageUrl}" style="display:block"><img src="${imgUrl}" alt="Attached photo" style="max-width:100%;border-radius:8px;border:1px solid #e5e7eb" /></a><p style="margin:8px 0 0;color:#888;font-size:13px">Photo attached — <a href="${manageUrl}" style="color:${brand}">open in app</a></p></div>`;
+      mediaBlockText = `\n\nA photo was attached. View it here: ${imgUrl}`;
+    } else if (mediaType === "video" && mediaPath) {
+      const videoUrl = `${siteBase}/uploads/notes/${mediaPath}`;
+      mediaBlockHtml = `<div style="margin-top:16px;background:#f7f8f6;border:1px solid #e5e7eb;border-radius:8px;padding:18px;text-align:center"><div style="font-size:36px;line-height:1;margin-bottom:8px">▶</div><div style="font-weight:600;margin-bottom:4px">Video attached</div><div style="color:#555;font-size:13px;margin-bottom:14px">Videos can't play inside email. Tap below to watch.</div><a href="${videoUrl}" style="background:${brand};color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;display:inline-block;font-weight:600">Watch video</a><div style="margin-top:10px;font-size:13px"><a href="${manageUrl}" style="color:${brand}">or open in app</a></div></div>`;
+      mediaBlockText = `\n\nA video was attached. Watch it here: ${videoUrl}`;
+    } else if (mediaType === "link" && mediaUrl) {
+      mediaBlockHtml = `<div style="margin-top:16px;background:#f7f8f6;border:1px solid #e5e7eb;border-radius:8px;padding:18px;text-align:center"><div style="font-size:36px;line-height:1;margin-bottom:8px">▶</div><div style="font-weight:600;margin-bottom:4px">Video link attached</div><a href="${mediaUrl}" style="background:${brand};color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;display:inline-block;font-weight:600;margin-top:8px">Watch video</a></div>`;
+      mediaBlockText = `\n\nA video link was shared: ${mediaUrl}`;
+    }
 
     (async () => {
       try {
@@ -921,11 +939,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           await sendEmail({
             to: profile.email,
             subject: `New note from ${coachName} about ${playerLabel}`,
-            text: `${coachName} posted a new note in ${playerLabel}'s coaching thread:\n\n${text}\n\nReply at: ${manageUrl}`,
+            text: `${coachName} posted a new note in ${playerLabel}'s coaching thread:\n\n${text || "(no message)"}${mediaBlockText}\n\nReply at: ${manageUrl}`,
             html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
               <h2 style="color:${brand};margin:0 0 8px">New note from ${coachName}</h2>
               <p style="margin:0 0 16px;color:#555">About <strong>${playerLabel}</strong></p>
-              <div style="background:#f7f8f6;border-left:4px solid ${brand};padding:14px 16px;border-radius:6px;white-space:pre-wrap">${safeText}</div>
+              ${safeText ? `<div style="background:#f7f8f6;border-left:4px solid ${brand};padding:14px 16px;border-radius:6px;white-space:pre-wrap">${safeText}</div>` : ""}
+              ${mediaBlockHtml}
               <p style="margin:20px 0 0"><a href="${manageUrl}" style="background:${brand};color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;display:inline-block">Reply to ${coachName}</a></p>
               <p style="margin:24px 0 0;color:#888;font-size:13px">You're receiving this because ${coachName} posted a coaching note for ${playerLabel}.</p>
             </div>`,
@@ -935,11 +954,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           await sendEmail({
             to: coachEmail,
             subject: `New note from ${profile.parentName || "a parent"} about ${playerLabel}`,
-            text: `${profile.parentName || "A parent"} posted a new note about ${playerLabel}:\n\n${text}\n\nReply at: ${manageUrl}`,
+            text: `${profile.parentName || "A parent"} posted a new note about ${playerLabel}:\n\n${text || "(no message)"}${mediaBlockText}\n\nReply at: ${manageUrl}`,
             html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
               <h2 style="color:${brand};margin:0 0 8px">New note from ${profile.parentName || "a parent"}</h2>
               <p style="margin:0 0 16px;color:#555">About <strong>${playerLabel}</strong></p>
-              <div style="background:#f7f8f6;border-left:4px solid ${brand};padding:14px 16px;border-radius:6px;white-space:pre-wrap">${safeText}</div>
+              ${safeText ? `<div style="background:#f7f8f6;border-left:4px solid ${brand};padding:14px 16px;border-radius:6px;white-space:pre-wrap">${safeText}</div>` : ""}
+              ${mediaBlockHtml}
               <p style="margin:20px 0 0"><a href="${manageUrl}" style="background:${brand};color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;display:inline-block">Open admin</a></p>
             </div>`,
           });
