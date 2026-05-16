@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
-import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus } from "lucide-react";
+import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
@@ -1399,18 +1399,133 @@ function ResourcesPanel() {
               </a>
               {r.description && <p className="text-xs text-muted-foreground mt-1">{r.description}</p>}
             </div>
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => { if (confirm(`Remove “${r.title}”?`)) del.mutate(r.id); }}
-              data-testid={`button-delete-resource-${r.id}`}
-            >
-              <Trash2 className="h-4 w-4" />
-            </Button>
+            <div className="flex flex-col gap-1">
+              <EditResourceDialog resource={r} />
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { if (confirm(`Remove “${r.title}”?`)) del.mutate(r.id); }}
+                data-testid={`button-delete-resource-${r.id}`}
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
         ))}
       </div>
     </div>
+  );
+}
+
+function EditResourceDialog({ resource }: { resource: Resource }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [open, setOpen] = useState(false);
+  const [title, setTitle] = useState(resource.title);
+  const [description, setDescription] = useState(resource.description || "");
+  const [category, setCategory] = useState(resource.category);
+  const [linkUrl, setLinkUrl] = useState(resource.type === "link" ? resource.url : "");
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  function reset() {
+    setTitle(resource.title);
+    setDescription(resource.description || "");
+    setCategory(resource.category);
+    setLinkUrl(resource.type === "link" ? resource.url : "");
+    setFile(null);
+  }
+
+  async function save() {
+    if (!title.trim()) { toast({ title: "Title is required" }); return; }
+    if (resource.type === "link" && !/^https?:\/\//i.test(linkUrl.trim())) {
+      toast({ title: "Link must start with http:// or https://" });
+      return;
+    }
+    setBusy(true);
+    try {
+      const fd = new FormData();
+      fd.append("title", title.trim());
+      fd.append("description", description.trim());
+      fd.append("category", category);
+      if (resource.type === "link") fd.append("url", linkUrl.trim());
+      if (file) fd.append("file", file);
+      const r = await fetch(`${API_BASE}/api/admin/resources/${resource.id}`, {
+        method: "PATCH",
+        credentials: "include",
+        body: fd,
+      });
+      if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        throw new Error(err.error || "Couldn't save");
+      }
+      qc.invalidateQueries({ queryKey: ["/api/resources"] });
+      toast({ title: "Resource updated" });
+      setOpen(false);
+    } catch (e: any) {
+      toast({ title: e?.message || "Couldn't save" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) reset(); }}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" data-testid={`button-edit-resource-${resource.id}`}>
+          <Pencil className="h-4 w-4" />
+        </Button>
+      </DialogTrigger>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Edit resource</DialogTitle>
+          <DialogDescription>Update the details below. Leave the file blank to keep the current one.</DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label>Category</Label>
+            <Select value={category} onValueChange={setCategory}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                {RESOURCE_CATEGORIES.map(c => (
+                  <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div>
+            <Label>Title</Label>
+            <Input value={title} onChange={e => setTitle(e.target.value)} data-testid={`input-edit-resource-title-${resource.id}`} />
+          </div>
+          <div>
+            <Label>Description</Label>
+            <Textarea value={description} onChange={e => setDescription(e.target.value)} rows={2} />
+          </div>
+          {resource.type === "link" ? (
+            <div>
+              <Label>URL</Label>
+              <Input value={linkUrl} onChange={e => setLinkUrl(e.target.value)} placeholder="https://…" />
+            </div>
+          ) : (
+            <div>
+              <Label>Replace file (optional)</Label>
+              <Input
+                type="file"
+                accept={resource.type === "pdf" ? "application/pdf" : resource.type === "image" ? "image/*" : "video/*"}
+                onChange={e => setFile(e.target.files?.[0] || null)}
+              />
+              <p className="text-xs text-muted-foreground mt-1">Current: {resource.filePath || "—"}</p>
+            </div>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)} disabled={busy}>Cancel</Button>
+          <Button onClick={save} disabled={busy} data-testid={`button-save-resource-${resource.id}`}>
+            {busy ? "Saving…" : "Save changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 

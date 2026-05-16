@@ -1066,6 +1066,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
   });
 
+  app.patch("/api/admin/resources/:id", requireAdmin, resourceUpload.single("file"), (req, res) => {
+    try {
+      const id = Number(req.params.id);
+      const existing = storage.getResourceById(id);
+      if (!existing) return res.status(404).json({ error: "Not found" });
+      const body = req.body || {};
+      const patch: any = {};
+      if (typeof body.title === "string") {
+        const t = body.title.trim();
+        if (!t) return res.status(400).json({ error: "Title is required" });
+        patch.title = t;
+      }
+      if (typeof body.description === "string") patch.description = body.description.trim();
+      if (typeof body.category === "string") {
+        const validCats = RESOURCE_CATEGORIES.map(c => c.id);
+        if (!validCats.includes(body.category)) return res.status(400).json({ error: "Invalid category" });
+        patch.category = body.category;
+      }
+      // Link URL edit (only when existing is a link)
+      if (existing.type === "link" && typeof body.url === "string") {
+        const u = body.url.trim();
+        if (!/^https?:\/\//i.test(u)) return res.status(400).json({ error: "Link must start with http:// or https://" });
+        patch.url = u;
+      }
+      // File replacement (only when existing is file-backed and a new file was uploaded)
+      if (existing.type !== "link" && req.file) {
+        // Remove old file
+        if (existing.filePath) { try { fs.unlinkSync(path.join(RESOURCE_DIR, existing.filePath)); } catch {} }
+        patch.filePath = req.file.filename;
+        patch.url = `/uploads/resources/${req.file.filename}`;
+      }
+      const updated = storage.updateResource(id, patch);
+      res.json({ resource: updated });
+    } catch (e: any) {
+      if (req.file) { try { fs.unlinkSync(path.join(RESOURCE_DIR, req.file.filename)); } catch {} }
+      res.status(400).json({ error: e?.message || "Couldn't update resource" });
+    }
+  });
+
   app.delete("/api/admin/resources/:id", requireAdmin, (req, res) => {
     const id = Number(req.params.id);
     const r = storage.getResourceById(id);

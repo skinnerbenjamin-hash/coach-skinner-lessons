@@ -232,6 +232,12 @@ export class DatabaseStorage {
   deleteResource(id: number) {
     db.delete(resources).where(eq(resources.id, id)).run();
   }
+  updateResource(id: number, patch: Partial<InsertResource>): Resource | undefined {
+    const existing = this.getResourceById(id);
+    if (!existing) return undefined;
+    db.update(resources).set(patch).where(eq(resources.id, id)).run();
+    return this.getResourceById(id);
+  }
 
   // expand booking with profile data
   expandBooking(b: Booking): BookingWithProfile {
