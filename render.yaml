@@ -1,0 +1,28 @@
+# Render Blueprint for Coach Skinner Lessons
+# https://render.com/docs/blueprint-spec
+services:
+  - type: web
+    name: coach-skinner-lessons
+    runtime: node
+    plan: starter           # $7/mo, always-on
+    region: ohio            # closest US-Central region to Indiana
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /healthz
+    autoDeploy: true        # redeploy on git push
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000        # Render injects PORT automatically; this is a fallback
+      - key: DB_PATH
+        value: /var/data/data.db
+      # Set these from the Render dashboard (do not commit secrets):
+      # RESEND_API_KEY, RESEND_FROM, COOKIE_SECRET (auto-generated below)
+      - key: COOKIE_SECRET
+        generateValue: true
+    disk:
+      name: sqlite-data
+      mountPath: /var/data  # persisted across deploys & restarts
+      sizeGB: 1
