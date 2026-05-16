@@ -60,10 +60,14 @@ const resourceUpload = multer({
       cb(null, safe);
     },
   }),
-  limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
+  limits: { fileSize: 200 * 1024 * 1024 }, // 200MB to fit video clips
   fileFilter: (_req, file, cb) => {
-    if (file.mimetype === "application/pdf" || /^image\//.test(file.mimetype)) cb(null, true);
-    else cb(new Error("Only PDF or image uploads are allowed."));
+    if (
+      file.mimetype === "application/pdf" ||
+      /^image\//.test(file.mimetype) ||
+      /^video\//.test(file.mimetype)
+    ) cb(null, true);
+    else cb(new Error("Only PDF, image, or video uploads are allowed."));
   },
 });
 const NOTES_DIR = path.join(UPLOAD_DIR, "notes");
@@ -1038,7 +1042,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const description = String(body.description || "").trim();
       const urlIn = String(body.url || "").trim();
       if (!title) return res.status(400).json({ error: "Title is required" });
-      if (!["pdf", "link", "image"].includes(type)) return res.status(400).json({ error: "Invalid type" });
+      if (!["pdf", "link", "image", "video"].includes(type)) return res.status(400).json({ error: "Invalid type" });
       const validCats = RESOURCE_CATEGORIES.map(c => c.id);
       if (!validCats.includes(category as any)) return res.status(400).json({ error: "Invalid category" });
 

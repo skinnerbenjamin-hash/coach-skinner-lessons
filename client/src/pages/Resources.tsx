@@ -11,11 +11,11 @@ import {
 } from "@/components/ui/select";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { FileText, ExternalLink, Image as ImageIcon, Lock, Search } from "lucide-react";
+import { FileText, ExternalLink, Image as ImageIcon, Lock, Search, Video } from "lucide-react";
 
 type Resource = {
   id: number;
-  type: "pdf" | "link" | "image";
+  type: "pdf" | "link" | "image" | "video";
   category: string;
   title: string;
   description: string | null;
@@ -33,6 +33,7 @@ function categoryLabel(c: string): string {
 function iconFor(type: Resource["type"]) {
   if (type === "pdf") return <FileText className="h-5 w-5" />;
   if (type === "image") return <ImageIcon className="h-5 w-5" />;
+  if (type === "video") return <Video className="h-5 w-5" />;
   return <ExternalLink className="h-5 w-5" />;
 }
 

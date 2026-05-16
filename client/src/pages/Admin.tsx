@@ -1207,7 +1207,7 @@ const RESOURCE_CATEGORIES = [
 
 type Resource = {
   id: number;
-  type: "pdf" | "link" | "image";
+  type: "pdf" | "link" | "image" | "video";
   category: string;
   title: string;
   description: string;
@@ -1225,7 +1225,7 @@ function ResourcesPanel() {
   const [filterCat, setFilterCat] = useState<string>("all");
 
   // form state
-  const [type, setType] = useState<"link" | "pdf" | "image">("link");
+  const [type, setType] = useState<"link" | "pdf" | "image" | "video">("link");
   const [category, setCategory] = useState<string>("general");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
@@ -1282,6 +1282,7 @@ function ResourcesPanel() {
   function iconFor(t: string) {
     if (t === "pdf") return <FileText className="h-4 w-4" />;
     if (t === "image") return <ImageIcon className="h-4 w-4" />;
+    if (t === "video") return <Video className="h-4 w-4" />;
     return <ExternalLink className="h-4 w-4" />;
   }
 
@@ -1299,9 +1300,10 @@ function ResourcesPanel() {
               <Select value={type} onValueChange={(v) => setType(v as any)}>
                 <SelectTrigger data-testid="select-resource-type"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="link">External link (article, video, website)</SelectItem>
+                  <SelectItem value="link">External link (YouTube, article, website)</SelectItem>
                   <SelectItem value="pdf">PDF handout</SelectItem>
                   <SelectItem value="image">Photo / image</SelectItem>
+                  <SelectItem value="video">Video file (mp4, mov, etc.)</SelectItem>
                 </SelectContent>
               </Select>
             </div>
@@ -1331,14 +1333,22 @@ function ResourcesPanel() {
               </div>
             ) : (
               <div className="sm:col-span-2">
-                <Label>{type === "pdf" ? "PDF file" : "Image file"}</Label>
+                <Label>
+                  {type === "pdf" ? "PDF file" : type === "video" ? "Video file" : "Image file"}
+                </Label>
                 <Input
                   type="file"
-                  accept={type === "pdf" ? "application/pdf" : "image/*"}
+                  accept={
+                    type === "pdf" ? "application/pdf" :
+                    type === "video" ? "video/*" :
+                    "image/*"
+                  }
                   onChange={(e) => setFile(e.target.files?.[0] ?? null)}
                   data-testid="input-resource-file"
                 />
-                <p className="text-xs text-muted-foreground mt-1">Max 25MB.</p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {type === "video" ? "Max 200MB. Pick any video saved on your phone or computer." : "Max 200MB."}
+                </p>
               </div>
             )}
           </div>

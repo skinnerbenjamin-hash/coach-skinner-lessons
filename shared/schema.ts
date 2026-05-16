@@ -70,7 +70,7 @@ export type InsertCoachingNote = z.infer<typeof insertCoachingNoteSchema>;
 export type CoachingNote = typeof coachingNotes.$inferSelect;
 
 // Resource library: handouts, links, photos shared with signed-up families.
-// type: "pdf" | "link" | "image"
+// type: "pdf" | "link" | "image" | "video"
 // category: "hitting" | "pitching" | "fielding" | "catching" | "baserunning" | "strength" | "mental" | "general"
 export const resources = sqliteTable("resources", {
   id: integer("id").primaryKey({ autoIncrement: true }),
