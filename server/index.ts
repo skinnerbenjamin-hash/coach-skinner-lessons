@@ -3,6 +3,8 @@ import express, { Response, NextFunction } from 'express';
 import type { Request } from 'express';
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
+import { sqlite } from "./storage";
+import { createTenantMiddleware } from "./tenant";
 import { createServer } from "node:http";
 
 const app = express();
@@ -60,6 +62,13 @@ app.use((req, res, next) => {
 
   next();
 });
+
+// Resolve the active tenant from the Host header on every request.  Must run
+// AFTER the body parsers and request-logging middleware, but BEFORE any route
+// handlers so they can read req.tenantId.  Importing ./storage above forces
+// runMigrations() to complete first, so the tenants table is guaranteed to
+// exist by the time this prepared statement is created.
+app.use(createTenantMiddleware(sqlite));
 
 (async () => {
   await registerRoutes(httpServer, app);

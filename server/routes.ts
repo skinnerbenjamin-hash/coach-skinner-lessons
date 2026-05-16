@@ -312,6 +312,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // --- Health check (used by Render) ---
   app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
+  // Temporary tenant-resolution diagnostic.  Returns the resolved tenantId
+  // and tenant slug for the incoming Host header.  Used during the
+  // multi-tenant rollout to verify subdomain + custom-domain routing.
+  // TODO: remove once tenant-aware routes are fully shipped.
+  app.get("/api/_tenant", (req, res) => {
+    res.json({
+      host: req.headers.host || null,
+      tenantId: req.tenantId ?? null,
+      slug: req.tenant?.slug ?? null,
+      name: req.tenant?.name ?? null,
+      sport: req.tenant?.sport ?? null,
+      primaryColor: req.tenant?.primary_color ?? null,
+      bookerLabel: req.tenant?.booker_label ?? null,
+      attendeeLabel: req.tenant?.attendee_label ?? null,
+    });
+  });
+
   // TEMP: Admin DB backup endpoint (pre-multi-tenant migration safety).
   // Remove after final migration deploy. Uses better-sqlite3's .backup() method
   // for a WAL-consistent single-file snapshot.
