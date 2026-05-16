@@ -19,7 +19,7 @@ sqlite.exec(`
   );
   CREATE TABLE IF NOT EXISTS admin_users (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    phone TEXT NOT NULL UNIQUE,
+    phone TEXT NOT NULL,
     name TEXT NOT NULL DEFAULT '',
     salt TEXT NOT NULL,
     hash TEXT NOT NULL,
@@ -27,6 +27,9 @@ sqlite.exec(`
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
   );
+  -- Tenant-scoped uniqueness on (tenant_id, phone) is added by migrations.ts
+  -- AFTER it adds the tenant_id column. We can't create the index here at
+  -- module-load time because tenant_id may not exist yet on a fresh install.
   CREATE TABLE IF NOT EXISTS admin_sessions (
     token TEXT PRIMARY KEY,
     created_at INTEGER NOT NULL,
@@ -52,6 +55,8 @@ function normalizePhone(p: string) {
 }
 
 // --- Seed default admin on first boot ---
+// The default admin is always for tenant 1 (Coach Skinner). Other tenants
+// seed their owner admin via the signup flow, not this function.
 export function seedDefaultAdmin(phone: string, password: string) {
   const np = normalizePhone(phone);
   const existingLegacy = sqlite.prepare(`SELECT id FROM admin_credentials WHERE id=1`).get();
@@ -63,8 +68,8 @@ export function seedDefaultAdmin(phone: string, password: string) {
     ).run(np, salt, hash, Date.now());
     console.log(`[auth] seeded default admin (legacy) for phone ${np}`);
   }
-  // Mirror to multi-admin table
-  const existingUser = sqlite.prepare(`SELECT id FROM admin_users WHERE phone=?`).get(np);
+  // Mirror to multi-admin table — tenant 1 only.
+  const existingUser = sqlite.prepare(`SELECT id FROM admin_users WHERE phone=? AND tenant_id=1`).get(np);
   if (!existingUser) {
     // Copy the legacy row's salt/hash if available so the same password keeps working
     const legacy = sqlite.prepare(`SELECT salt, hash FROM admin_credentials WHERE id=1`).get() as any;
@@ -76,12 +81,12 @@ export function seedDefaultAdmin(phone: string, password: string) {
     }
     const now = Date.now();
     sqlite.prepare(
-      `INSERT INTO admin_users (phone, name, salt, hash, is_owner, created_at, updated_at) VALUES (?, ?, ?, ?, 1, ?, ?)`
+      `INSERT INTO admin_users (tenant_id, phone, name, salt, hash, is_owner, created_at, updated_at) VALUES (1, ?, ?, ?, ?, 1, ?, ?)`
     ).run(np, "Coach Skinner", salt, hash, now, now);
     console.log(`[auth] seeded owner admin for phone ${np}`);
   } else {
-    // Make sure owner flag is set
-    sqlite.prepare(`UPDATE admin_users SET is_owner=1 WHERE phone=?`).run(np);
+    // Make sure owner flag is set on the tenant-1 row.
+    sqlite.prepare(`UPDATE admin_users SET is_owner=1 WHERE phone=? AND tenant_id=1`).run(np);
   }
 }
 
@@ -106,32 +111,34 @@ function rowToAdminUser(row: any): AdminUser {
   };
 }
 
-export function listAdminUsers(): AdminUser[] {
-  const rows = sqlite.prepare(`SELECT * FROM admin_users ORDER BY is_owner DESC, created_at ASC`).all() as any[];
+export function listAdminUsers(tenantId: number): AdminUser[] {
+  const rows = sqlite
+    .prepare(`SELECT * FROM admin_users WHERE tenant_id=? ORDER BY is_owner DESC, created_at ASC`)
+    .all(tenantId) as any[];
   return rows.map(rowToAdminUser);
 }
 
-export function addAdminUser(input: { phone: string; name: string; password: string }): AdminUser {
+export function addAdminUser(tenantId: number, input: { phone: string; name: string; password: string }): AdminUser {
   const np = normalizePhone(input.phone);
   if (!np || np.length < 7) throw new Error("Phone number is required");
   if (!input.password || input.password.length < 6) throw new Error("Password must be at least 6 characters");
-  const existing = sqlite.prepare(`SELECT id FROM admin_users WHERE phone=?`).get(np);
+  const existing = sqlite.prepare(`SELECT id FROM admin_users WHERE phone=? AND tenant_id=?`).get(np, tenantId);
   if (existing) throw new Error("An admin with that phone already exists");
   const salt = randomBytes(16).toString("hex");
   const hash = hashPassword(input.password, salt);
   const now = Date.now();
   sqlite.prepare(
-    `INSERT INTO admin_users (phone, name, salt, hash, is_owner, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)`
-  ).run(np, input.name || "", salt, hash, now, now);
-  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE phone=?`).get(np);
+    `INSERT INTO admin_users (tenant_id, phone, name, salt, hash, is_owner, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
+  ).run(tenantId, np, input.name || "", salt, hash, now, now);
+  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE phone=? AND tenant_id=?`).get(np, tenantId);
   return rowToAdminUser(row);
 }
 
-export function deleteAdminUser(id: number) {
-  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE id=?`).get(id) as any;
+export function deleteAdminUser(tenantId: number, id: number) {
+  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE id=? AND tenant_id=?`).get(id, tenantId) as any;
   if (!row) return;
   if (row.is_owner) throw new Error("Cannot remove the owner admin");
-  sqlite.prepare(`DELETE FROM admin_users WHERE id=?`).run(id);
+  sqlite.prepare(`DELETE FROM admin_users WHERE id=? AND tenant_id=?`).run(id, tenantId);
 }
 
 // --- Credential change ---

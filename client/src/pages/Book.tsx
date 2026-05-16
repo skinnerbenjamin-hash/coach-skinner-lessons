@@ -33,6 +33,18 @@ type GapWarning = {
 
 type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string; photoPath?: string };
 
+type LessonType = {
+  id: number;
+  name: string;
+  durationMin: number;
+  capacity: number;
+  active: number;
+};
+type LessonTypesResponse = { lessonTypes: LessonType[] };
+
+// One extra participant beyond the primary booker.
+type ParticipantDraft = { playerName: string; parentName: string; notes: string };
+
 type Step = "profile" | "pick" | "review" | "done";
 
 export default function Book() {
@@ -62,6 +74,38 @@ export default function Book() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [weekStart, setWeekStart] = useState(todayISO());
   const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart]);
+
+  // lesson types (per tenant) — drives picker + group booking participant UI
+  const { data: lessonTypesData } = useQuery<LessonTypesResponse>({
+    queryKey: ["/api/lesson-types"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/lesson-types");
+      return r.json();
+    },
+    staleTime: 60_000,
+  });
+  const lessonTypes = lessonTypesData?.lessonTypes ?? [];
+  // Show the picker only when meaningful — multiple types OR any group lesson.
+  const showLessonTypePicker = lessonTypes.length > 1 || lessonTypes.some(t => t.capacity > 1);
+  const [selectedLessonTypeId, setSelectedLessonTypeId] = useState<number | null>(null);
+  // Auto-select the first lesson type when the list arrives, so solo flows work
+  // without the user having to touch the picker. The picker still lets group
+  // tenants change it.
+  useEffect(() => {
+    if (selectedLessonTypeId === null && lessonTypes.length > 0) {
+      setSelectedLessonTypeId(lessonTypes[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lessonTypes.length]);
+  const selectedLessonType = lessonTypes.find(t => t.id === selectedLessonTypeId) ?? null;
+  const capacity = selectedLessonType?.capacity ?? 1;
+  // Extra participants (siblings/friends booking the same slot)
+  const [participants, setParticipants] = useState<ParticipantDraft[]>([]);
+  // When capacity changes (user picked a different lesson type), trim/clear
+  // participants so we never submit more than capacity-1 extras.
+  useEffect(() => {
+    setParticipants(prev => prev.slice(0, Math.max(0, capacity - 1)));
+  }, [capacity]);
 
   // result
   const [confirmation, setConfirmation] = useState<null | {
@@ -172,6 +216,17 @@ export default function Book() {
         phone: normalizePhone(phone),
         email: email.trim(),
         parentName, playerName, notes,
+        lessonTypeId: selectedLessonTypeId ?? undefined,
+        // Filter out empty participant rows; server requires playerName + parentName
+        participants: participants
+          .filter(p => p.playerName.trim() && p.parentName.trim())
+          .map(p => ({
+            playerName: p.playerName.trim(),
+            parentName: p.parentName.trim(),
+            notes: p.notes.trim(),
+            phone: "",
+            email: "",
+          })),
       });
       const data = await r.json();
       // After booking creates/updates the profile, upload optional photo if user chose one
@@ -408,11 +463,114 @@ export default function Book() {
 
       {step === "pick" && (
         <div className="mt-6 space-y-4">
+          {showLessonTypePicker && (
+            <Card>
+              <CardContent className="p-5 space-y-3">
+                <h2 className="text-base font-semibold">Choose lesson type</h2>
+                <div className="grid sm:grid-cols-2 gap-2">
+                  {lessonTypes.map(lt => {
+                    const isPicked = lt.id === selectedLessonTypeId;
+                    return (
+                      <button
+                        key={lt.id}
+                        onClick={() => setSelectedLessonTypeId(lt.id)}
+                        data-testid={`button-lesson-type-${lt.id}`}
+                        className={
+                          "text-left rounded-md border p-3 transition-colors " +
+                          (isPicked
+                            ? "border-primary bg-primary/10"
+                            : "border-border hover-elevate")
+                        }
+                      >
+                        <div className="font-medium text-sm">{lt.name}</div>
+                        <div className="text-xs text-muted-foreground mt-0.5">
+                          {lt.durationMin} min{lt.capacity > 1 ? ` · up to ${lt.capacity} ${labels.attendee.toLowerCase()}s` : ""}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+                {capacity > 1 && (
+                  <>
+                    <Separator />
+                    <div className="space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div>
+                          <h3 className="text-sm font-semibold">
+                            Additional {labels.attendee.toLowerCase()}s (optional)
+                          </h3>
+                          <p className="text-xs text-muted-foreground">
+                            Add up to {capacity - 1} more — siblings or friends joining the same session.
+                          </p>
+                        </div>
+                        {participants.length < capacity - 1 && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setParticipants(p => [...p, { playerName: "", parentName: parentName, notes: "" }])}
+                            data-testid="button-add-participant"
+                          >
+                            Add {labels.attendee.toLowerCase()}
+                          </Button>
+                        )}
+                      </div>
+                      {participants.map((p, i) => (
+                        <div key={i} className="rounded-md border border-border p-3 space-y-2">
+                          <div className="flex items-center justify-between">
+                            <div className="text-xs font-medium text-muted-foreground">
+                              {labels.attendee} {i + 2}
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setParticipants(prev => prev.filter((_, j) => j !== i))}
+                              className="text-xs text-muted-foreground hover:text-destructive"
+                              data-testid={`button-remove-participant-${i}`}
+                            >
+                              Remove
+                            </button>
+                          </div>
+                          <div className="grid sm:grid-cols-2 gap-2">
+                            <div>
+                              <Label className="text-xs">{labels.attendee} name *</Label>
+                              <Input
+                                value={p.playerName}
+                                onChange={(e) => setParticipants(prev => prev.map((x, j) => j === i ? { ...x, playerName: e.target.value } : x))}
+                                placeholder="Name"
+                                data-testid={`input-participant-player-${i}`}
+                              />
+                            </div>
+                            <div>
+                              <Label className="text-xs">{labels.booker} name *</Label>
+                              <Input
+                                value={p.parentName}
+                                onChange={(e) => setParticipants(prev => prev.map((x, j) => j === i ? { ...x, parentName: e.target.value } : x))}
+                                placeholder="Guardian's name"
+                                data-testid={`input-participant-parent-${i}`}
+                              />
+                            </div>
+                          </div>
+                          <div>
+                            <Label className="text-xs">Focus areas (optional)</Label>
+                            <Input
+                              value={p.notes}
+                              onChange={(e) => setParticipants(prev => prev.map((x, j) => j === i ? { ...x, notes: e.target.value } : x))}
+                              placeholder="Hitting, fielding…"
+                              data-testid={`input-participant-notes-${i}`}
+                            />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          )}
           <div className="flex items-center justify-between flex-wrap gap-3">
             <div>
               <h1 className="text-xl font-semibold">Pick your sessions</h1>
               <p className="text-sm text-muted-foreground">
-                Each session is 30 minutes. Tap any available time to add it.
+                Each session is {selectedLessonType?.durationMin ?? 30} minutes. Tap any available time to add it.
               </p>
             </div>
             <div className="flex items-center gap-2">
@@ -522,11 +680,33 @@ export default function Book() {
 
           <Card>
             <CardContent className="p-6 space-y-3">
+              {selectedLessonType && showLessonTypePicker && (
+                <div className="text-sm">
+                  <span className="text-muted-foreground">Lesson type: </span>
+                  <span className="font-medium" data-testid="text-review-lesson-type">{selectedLessonType.name}</span>
+                  <span className="text-muted-foreground"> · {selectedLessonType.durationMin} min</span>
+                </div>
+              )}
               <div className="text-sm text-muted-foreground">{labels.attendee}</div>
               <div className="font-medium" data-testid="text-review-player">
                 {playerName} <span className="text-muted-foreground">·</span>{" "}
                 <span className="text-muted-foreground">{parentName} · {formatPhone(phone)}</span>
               </div>
+              {participants.filter(p => p.playerName.trim()).length > 0 && (
+                <div className="text-sm space-y-1">
+                  <div className="text-muted-foreground">Also attending:</div>
+                  <ul className="list-disc pl-5">
+                    {participants.filter(p => p.playerName.trim()).map((p, i) => (
+                      <li key={i} data-testid={`text-review-participant-${i}`}>
+                        {p.playerName.trim()}
+                        {p.parentName.trim() && p.parentName.trim() !== parentName && (
+                          <span className="text-muted-foreground"> · {p.parentName.trim()}</span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {notes && <div className="text-sm">Focus: {notes}</div>}
 
               <Separator />

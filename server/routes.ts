@@ -1495,16 +1495,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // ===== Admin team management =====
-  app.get("/api/admin/team", requireAdmin, (_req, res) => {
-    res.json({ admins: listAdminUsers() });
+  app.get("/api/admin/team", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    res.json({ admins: listAdminUsers(tenantId) });
   });
 
   app.post("/api/admin/team", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     try {
       const phone = String(req.body?.phone || "");
       const name = String(req.body?.name || "");
       const password = String(req.body?.password || "");
-      const user = addAdminUser({ phone, name, password });
+      const user = addAdminUser(tenantId, { phone, name, password });
       res.json({ admin: user });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || "Couldn't add admin" });
@@ -1512,9 +1514,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/admin/team/:id", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     try {
       const id = Number(req.params.id);
-      deleteAdminUser(id);
+      deleteAdminUser(tenantId, id);
       res.json({ ok: true });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || "Couldn't remove admin" });

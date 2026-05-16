@@ -334,4 +334,8 @@ export type BookingWithProfile = Booking & {
   email: string;
   notes: string;
   photoPath: string;
+  // Other people in the same booking group (siblings/friends) beyond the
+  // primary booker. Empty array for solo bookings. Used by admin UI to show
+  // "+ Sarah, + Maya" badges.
+  extraParticipants?: { profileId: number; parentName: string; playerName: string }[];
 };

@@ -348,6 +348,55 @@ export function runMigrations(sqlite: DB) {
     );
   }
 
+  // ---- 7b. Replace admin_users.phone unique constraint ----------------
+  // The legacy table has UNIQUE(phone), which prevents two different tenants
+  // from each having an admin who happens to share the same phone number
+  // (rare in practice, but real). Rebuild to UNIQUE(tenant_id, phone).
+  // Idempotent: detected by the presence of the new composite index.
+  if (
+    tableExists(sqlite, "admin_users") &&
+    !indexExists(sqlite, "admin_users_tenant_phone_unique")
+  ) {
+    const adminUserIndexes = sqlite
+      .prepare(`PRAGMA index_list(admin_users)`)
+      .all() as { name: string; unique: number; origin?: string }[];
+    const hasLegacyUnique = adminUserIndexes.some(
+      (idx) => idx.unique === 1 && idx.name.startsWith("sqlite_autoindex_admin_users")
+    );
+
+    if (hasLegacyUnique) {
+      const txn = sqlite.transaction(() => {
+        const cols = sqlite.prepare(`PRAGMA table_info(admin_users)`).all() as {
+          name: string;
+          type: string;
+          notnull: number;
+          dflt_value: string | null;
+          pk: number;
+        }[];
+        const defs = cols
+          .map((c) => {
+            let def = `${c.name} ${c.type}`;
+            if (c.pk === 1) def += ` PRIMARY KEY AUTOINCREMENT`;
+            if (c.notnull && c.pk !== 1) def += ` NOT NULL`;
+            if (c.dflt_value !== null) def += ` DEFAULT ${c.dflt_value}`;
+            return def;
+          })
+          .join(", ");
+        const colNames = cols.map((c) => c.name).join(", ");
+        sqlite.exec(`CREATE TABLE admin_users_new (${defs})`);
+        sqlite.exec(`INSERT INTO admin_users_new (${colNames}) SELECT ${colNames} FROM admin_users`);
+        sqlite.exec(`DROP TABLE admin_users`);
+        sqlite.exec(`ALTER TABLE admin_users_new RENAME TO admin_users`);
+      });
+      txn();
+    }
+
+    sqlite.exec(
+      `CREATE UNIQUE INDEX IF NOT EXISTS admin_users_tenant_phone_unique
+       ON admin_users(tenant_id, phone)`
+    );
+  }
+
   // ---- 8. Drop legacy UNIQUE(start) on bookings -----------------------
   // Two reasons:
   //   - Different tenants can have bookings at the same wall-clock start.

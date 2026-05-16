@@ -412,6 +412,27 @@ export class DatabaseStorage {
   // expand booking with profile data
   expandBooking(tenantId: number, b: Booking): BookingWithProfile {
     const p = this.getProfileById(tenantId, b.profileId);
+    // Pull extra participants (everyone in the booking_participants table for
+    // this group EXCEPT the primary booker profile). Used so the admin UI can
+    // see siblings/friends on group bookings.
+    let extraParticipants: { profileId: number; parentName: string; playerName: string }[] = [];
+    try {
+      const rows = sqlite.prepare(
+        `SELECT bp.profile_id AS profileId, pr.parent_name AS parentName, pr.player_name AS playerName
+           FROM booking_participants bp
+           JOIN profiles pr ON pr.id = bp.profile_id
+          WHERE bp.tenant_id = ? AND bp.booking_group = ? AND bp.profile_id != ?`,
+      ).all(tenantId, b.bookingGroup, b.profileId) as any[];
+      extraParticipants = rows.map(r => ({
+        profileId: r.profileId,
+        parentName: r.parentName || "",
+        playerName: r.playerName || "",
+      }));
+    } catch {
+      // booking_participants may not exist on very old DBs (pre-migration);
+      // expand cleanly with no extras.
+      extraParticipants = [];
+    }
     return {
       ...b,
       parentName: p?.parentName ?? "(unknown)",
@@ -420,6 +441,7 @@ export class DatabaseStorage {
       email: p?.email ?? "",
       notes: p?.notes ?? "",
       photoPath: p?.photoPath ?? "",
+      extraParticipants,
     };
   }
 }

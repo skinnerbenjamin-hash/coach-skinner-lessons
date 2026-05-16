@@ -25,6 +25,8 @@ type Booking = {
   profileId: number;
   parentName: string; playerName: string; phone: string; email: string; notes: string;
   photoPath: string;
+  // Phase 1.5: extra participants for group bookings (siblings/friends).
+  extraParticipants?: { profileId: number; parentName: string; playerName: string }[];
 };
 type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; mediaType: "image" | "video" | "link" | null; mediaPath: string | null; mediaUrl: string | null; createdAt: number };
 
@@ -379,6 +381,15 @@ function BookingsPanel() {
                     {" "}· {b.parentName} · {formatPhone(b.phone)}
                     {b.notes && <span> · “{b.notes}”</span>}
                   </div>
+                  {b.extraParticipants && b.extraParticipants.length > 0 && (
+                    <div className="mt-1 flex flex-wrap gap-1" data-testid={`text-extra-participants-${b.id}`}>
+                      {b.extraParticipants.map(p => (
+                        <Badge key={p.profileId} variant="secondary" className="text-xs">
+                          + {p.playerName}
+                        </Badge>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </div>
               <Button
