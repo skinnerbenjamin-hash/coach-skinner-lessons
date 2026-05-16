@@ -14,6 +14,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NPM_CONFIG_PRODUCTION   # install devDependencies (esbuild, vite, tsx) for build
+        value: "false"
       - key: PORT
         value: 10000        # Render injects PORT automatically; this is a fallback
       - key: DB_PATH
