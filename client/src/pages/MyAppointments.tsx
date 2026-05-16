@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,27 +15,38 @@ import {
   normalizePhone, formatPhone, formatDateFull, formatIsoStartEnd, isWithin24h,
   todayISO, addDays, formatDateLong, formatTime,
 } from "@/lib/scheduling";
-import { Lock, Search } from "lucide-react";
+import { Lock, Search, Pencil } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
-  parentName: string; playerName: string; phone: string; notes: string;
+  parentName: string; playerName: string; phone: string; email: string; notes: string;
 };
-type Profile = { id: number; phone: string; parentName: string; playerName: string; notes: string };
+type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string };
 
 export default function MyAppointments() {
-  const [phoneInput, setPhoneInput] = useState("");
-  const [activePhone, setActivePhone] = useState<string | null>(null);
+  const [emailInput, setEmailInput] = useState("");
+  const [activeEmail, setActiveEmail] = useState<string | null>(null);
   const qc = useQueryClient();
   const { toast } = useToast();
 
+  // Restore last-used email so people don't have to retype after edits
+  useEffect(() => {
+    try {
+      const stored = localStorage.getItem("csb-last-email");
+      if (stored) {
+        setEmailInput(stored);
+        setActiveEmail(stored);
+      }
+    } catch {}
+  }, []);
+
   const { data, isLoading, isError } = useQuery<{ profile: Profile | null; bookings: Booking[] }>({
-    queryKey: ["/api/my-bookings", activePhone],
+    queryKey: ["/api/my-bookings-by-email", activeEmail],
     queryFn: async () => {
-      const r = await apiRequest("GET", `/api/my-bookings/${activePhone}`);
+      const r = await apiRequest("GET", `/api/my-bookings-by-email/${encodeURIComponent(activeEmail!)}`);
       return r.json();
     },
-    enabled: !!activePhone,
+    enabled: !!activeEmail,
   });
 
   const cancelMut = useMutation({
@@ -43,19 +54,20 @@ export default function MyAppointments() {
       await apiRequest("DELETE", `/api/bookings/${id}`);
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/my-bookings"] });
+      qc.invalidateQueries({ queryKey: ["/api/my-bookings-by-email"] });
       toast({ title: "Appointment cancelled" });
     },
     onError: (e: any) => toast({ variant: "destructive", title: "Couldn't cancel", description: e.message }),
   });
 
   function onLookup() {
-    const digits = normalizePhone(phoneInput);
-    if (digits.length < 10) {
-      toast({ variant: "destructive", title: "Enter a full phone number" });
+    const email = emailInput.trim().toLowerCase();
+    if (!email || !email.includes("@")) {
+      toast({ variant: "destructive", title: "Enter a valid email" });
       return;
     }
-    setActivePhone(digits);
+    try { localStorage.setItem("csb-last-email", email); } catch {}
+    setActiveEmail(email);
   }
 
   const upcoming = (data?.bookings ?? []).filter(b => b.start >= todayISO() + "T00:00");
@@ -66,21 +78,25 @@ export default function MyAppointments() {
       <div>
         <h1 className="text-xl font-semibold">My appointments</h1>
         <p className="text-sm text-muted-foreground">
-          Enter the phone number you booked with to view, reschedule, or cancel.
+          Enter the email you booked with to view, reschedule, cancel, or update your info.
+        </p>
+        <p className="text-xs text-muted-foreground mt-2">
+          <b>Cancellation policy:</b> Cancellations or no-shows within 24 hours of the scheduled session are subject to a $30 fee per 30-minute session, billed at the next lesson.
         </p>
       </div>
 
       <Card>
         <CardContent className="p-6 flex flex-col sm:flex-row gap-3 items-end">
           <div className="flex-1 w-full">
-            <Label htmlFor="lookup-phone">Phone number</Label>
+            <Label htmlFor="lookup-email">Email</Label>
             <Input
-              id="lookup-phone"
-              data-testid="input-lookup-phone"
-              inputMode="tel"
-              placeholder="(317) 555-1234"
-              value={phoneInput}
-              onChange={e => setPhoneInput(e.target.value)}
+              id="lookup-email"
+              data-testid="input-lookup-email"
+              type="email"
+              inputMode="email"
+              placeholder="you@example.com"
+              value={emailInput}
+              onChange={e => setEmailInput(e.target.value)}
               onKeyDown={e => e.key === "Enter" && onLookup()}
             />
           </div>
@@ -94,23 +110,26 @@ export default function MyAppointments() {
         <Alert variant="destructive"><AlertDescription>Couldn't load. Try again.</AlertDescription></Alert>
       )}
 
-      {activePhone && !isLoading && data && (
+      {activeEmail && !isLoading && data && (
         <>
           {!data.profile ? (
             <Alert>
               <AlertDescription>
-                No profile found for {formatPhone(activePhone)}. Make sure you used the same number
+                No account found for {activeEmail}. Make sure you used the same email
                 when booking, or <a className="underline" href="/#/" data-testid="link-book-new">book your first session</a>.
               </AlertDescription>
             </Alert>
           ) : (
             <>
-              <div className="text-sm text-muted-foreground">
-                Showing appointments for{" "}
-                <span className="text-foreground font-medium">
-                  {data.profile.playerName}
-                </span>{" "}
-                · {formatPhone(data.profile.phone)}
+              <div className="flex items-center justify-between flex-wrap gap-2">
+                <div className="text-sm text-muted-foreground">
+                  Showing appointments for{" "}
+                  <span className="text-foreground font-medium">
+                    {data.profile.playerName}
+                  </span>{" "}
+                  · {formatPhone(data.profile.phone)} · {data.profile.email}
+                </div>
+                <EditProfileDialog profile={data.profile} />
               </div>
 
               <Section title="Upcoming">
@@ -191,6 +210,100 @@ function BookingRow({ b, onCancel }: { b: Booking; onCancel: () => void }) {
   );
 }
 
+function EditProfileDialog({ profile }: { profile: Profile }) {
+  const [open, setOpen] = useState(false);
+  const [parentName, setParentName] = useState(profile.parentName);
+  const [playerName, setPlayerName] = useState(profile.playerName);
+  const [email, setEmail] = useState(profile.email);
+  const [phone, setPhone] = useState(profile.phone);
+  const [notes, setNotes] = useState(profile.notes || "");
+  const qc = useQueryClient();
+  const { toast } = useToast();
+
+  useEffect(() => {
+    if (open) {
+      setParentName(profile.parentName);
+      setPlayerName(profile.playerName);
+      setEmail(profile.email);
+      setPhone(profile.phone);
+      setNotes(profile.notes || "");
+    }
+  }, [open, profile]);
+
+  const mut = useMutation({
+    mutationFn: async () => {
+      // Use the CURRENT email as proof of ownership
+      const body = {
+        proofEmail: profile.email,
+        parentName,
+        playerName,
+        email: email.trim(),
+        phone,
+        notes,
+      };
+      const r = await apiRequest("PATCH", `/api/profile/${profile.id}`, body);
+      return r.json();
+    },
+    onSuccess: (updated: Profile) => {
+      // If email changed, store the new email for next lookup
+      if (updated?.email) {
+        try { localStorage.setItem("csb-last-email", updated.email.toLowerCase()); } catch {}
+      }
+      qc.invalidateQueries({ queryKey: ["/api/my-bookings-by-email"] });
+      toast({ title: "Info updated" });
+      setOpen(false);
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't update", description: e.message }),
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" data-testid="button-edit-profile">
+          <Pencil className="h-3.5 w-3.5 mr-2" /> Edit info
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Edit your info</DialogTitle>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <Label htmlFor="edit-parent">Parent name</Label>
+            <Input id="edit-parent" value={parentName} onChange={e => setParentName(e.target.value)} data-testid="input-edit-parent" />
+          </div>
+          <div>
+            <Label htmlFor="edit-player">Player name</Label>
+            <Input id="edit-player" value={playerName} onChange={e => setPlayerName(e.target.value)} data-testid="input-edit-player" />
+          </div>
+          <div>
+            <Label htmlFor="edit-email">Email</Label>
+            <Input id="edit-email" type="email" value={email} onChange={e => setEmail(e.target.value)} data-testid="input-edit-email" />
+          </div>
+          <div>
+            <Label htmlFor="edit-phone">Phone</Label>
+            <Input id="edit-phone" inputMode="tel" value={phone} onChange={e => setPhone(e.target.value)} data-testid="input-edit-phone" />
+          </div>
+          <div>
+            <Label htmlFor="edit-notes">Notes (allergies, level, etc.)</Label>
+            <Input id="edit-notes" value={notes} onChange={e => setNotes(e.target.value)} data-testid="input-edit-notes" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button
+            onClick={() => mut.mutate()}
+            disabled={mut.isPending}
+            data-testid="button-save-profile"
+          >
+            {mut.isPending ? "Saving..." : "Save changes"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function RescheduleDialog({ booking }: { booking: Booking }) {
   const [open, setOpen] = useState(false);
   const [newStart, setNewStart] = useState<string | null>(null);
@@ -214,7 +327,7 @@ function RescheduleDialog({ booking }: { booking: Booking }) {
       await apiRequest("PATCH", `/api/bookings/${booking.id}`, { newStart });
     },
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ["/api/my-bookings"] });
+      qc.invalidateQueries({ queryKey: ["/api/my-bookings-by-email"] });
       toast({ title: "Rescheduled" });
       setOpen(false);
       setNewStart(null);

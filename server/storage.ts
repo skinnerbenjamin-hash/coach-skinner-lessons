@@ -82,8 +82,28 @@ export class DatabaseStorage {
     const p = normalizePhone(phone);
     return db.select().from(profiles).where(eq(profiles.phone, p)).get();
   }
+  getProfileByEmail(email: string): Profile | undefined {
+    const e = email.trim().toLowerCase();
+    if (!e) return undefined;
+    // case-insensitive lookup
+    const all = db.select().from(profiles).all();
+    return all.find(p => (p.email || "").trim().toLowerCase() === e);
+  }
   getProfileById(id: number): Profile | undefined {
     return db.select().from(profiles).where(eq(profiles.id, id)).get();
+  }
+  updateProfile(id: number, patch: { email?: string; parentName?: string; playerName?: string; phone?: string; notes?: string }): Profile | undefined {
+    const existing = this.getProfileById(id);
+    if (!existing) return undefined;
+    const fields: Record<string, string> = {};
+    if (patch.email !== undefined) fields.email = patch.email;
+    if (patch.parentName !== undefined) fields.parentName = patch.parentName;
+    if (patch.playerName !== undefined) fields.playerName = patch.playerName;
+    if (patch.phone !== undefined) fields.phone = normalizePhone(patch.phone);
+    if (patch.notes !== undefined) fields.notes = patch.notes;
+    if (Object.keys(fields).length === 0) return existing;
+    db.update(profiles).set(fields).where(eq(profiles.id, id)).run();
+    return this.getProfileById(id);
   }
   upsertProfile(input: InsertProfile): Profile {
     const phone = normalizePhone(input.phone);

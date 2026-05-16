@@ -190,11 +190,15 @@ function renderReminderHtml(opts: { greeting: string; bodyText: string; manageUr
         <a href="${opts.manageUrl}" style="display:inline-block;background:#1f5a37;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:16px;">Manage your appointments</a>
       </div>
       <p style="margin:0 0 8px 0;font-size:14px;line-height:1.5;color:#525f57;">
-        Need to <b>cancel or reschedule</b>? You can do it yourself anytime up to
-        <b>24 hours before</b> your session.${opts.cancelDeadline ? ` For this session that's by <b>${opts.cancelDeadline}</b>.` : ""}
-        Just open the link above and enter the phone number you booked with.
+        To <b>cancel or reschedule</b>, please use the link above no later than
+        <b>24 hours before</b> your session.${opts.cancelDeadline ? ` For this session, that's by <b>${opts.cancelDeadline}</b>.` : ""}
+        Sign in with the email you booked with.
       </p>
-      <p style="margin:16px 0 0 0;font-size:13px;color:#7a857e;">Within 24 hours? Text Coach Skinner directly.</p>
+      <div style="background:#fff4e8;border-left:4px solid #d18e1c;padding:12px 16px;border-radius:6px;margin:16px 0 0 0;">
+        <div style="font-weight:600;font-size:13px;margin-bottom:4px;">Cancellation policy</div>
+        <div style="font-size:13px;line-height:1.5;color:#3a4540;">Cancellations or no-shows within 24 hours of the scheduled session are subject to a <b>$30 fee per 30-minute session</b>, billed at the next lesson.</div>
+      </div>
+      <p style="margin:12px 0 0 0;font-size:13px;color:#7a857e;">Within 24 hours? Please text Coach Skinner directly.</p>
     </div>
     <div style="text-align:center;font-size:12px;color:#7a857e;margin-top:12px;">Coach Skinner Lessons</div>
   </div>
@@ -232,7 +236,7 @@ async function sendReminderRow(r: any): Promise<{ ok: true; dryRun?: boolean } |
       manageUrl,
       cancelDeadline: deadline,
     });
-    const text = `${r.message}\n\nManage your appointments: ${manageUrl}\nNeed to cancel or reschedule? You can do it yourself anytime up to 24 hours before your session${deadline ? ` (by ${deadline})` : ""}. Just open the link and enter the phone number you booked with.`;
+    const text = `${r.message}\n\nManage your appointments: ${manageUrl}\nTo cancel or reschedule, please use the link above no later than 24 hours before your session${deadline ? ` (by ${deadline})` : ""}. Sign in with the email you booked with.\n\nCancellation policy: Cancellations or no-shows within 24 hours of the scheduled session are subject to a $30 fee per 30-minute session, billed at the next lesson.`;
     emailResult = await sendEmail({ to: emailAddr, subject: r.subject || "Lesson reminder", html, text });
   }
   if (wantSms && phone) {

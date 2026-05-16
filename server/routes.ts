@@ -474,12 +474,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             </div>
             <div style="background:#f0f6f2;border-left:4px solid #1f5a37;padding:12px 16px;border-radius:6px;margin:16px 0;">
               <div style="font-weight:600;font-size:14px;margin-bottom:4px;">Need to change or cancel?</div>
-              <div style="font-size:14px;line-height:1.5;color:#3a4540;">You can do it yourself anytime up to <b>24 hours before</b> the session. Just open the link above and enter the phone number you booked with (${profile.phone}). Save this email — the link works any time.</div>
+              <div style="font-size:14px;line-height:1.5;color:#3a4540;">You can do it yourself anytime up to <b>24 hours before</b> the session. Just open the link above and use the email you booked with (${profile.email || "your booking email"}). Save this email — the link works any time.</div>
+            </div>
+            <div style="background:#fff4e8;border-left:4px solid #d18e1c;padding:12px 16px;border-radius:6px;margin:12px 0;">
+              <div style="font-weight:600;font-size:14px;margin-bottom:4px;">Cancellation policy</div>
+              <div style="font-size:14px;line-height:1.5;color:#3a4540;">Cancellations or no-shows within <b>24 hours</b> of the scheduled session are subject to a <b>$30 fee per 30-minute session</b>, billed at the next lesson. We appreciate your understanding—late cancellations prevent us from offering the time to other families.</div>
             </div>
             <p style="font-size:13px;color:#7a857e;margin:16px 0 0 0;">Within 24 hours? Text ${coachName} directly.</p>
           </div>
         </div></body></html>`;
-      const text = `${coachName} — ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed:\n${sessionLines}\n\nA calendar file (.ics) is attached.\n\nManage your appointments: ${manageUrl}\nNeed to change or cancel? You can do it yourself anytime up to 24 hours before the session. Just open the link and enter ${profile.phone}.`;
+      const text = `${coachName} — ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed:\n${sessionLines}\n\nA calendar file (.ics) is attached for your records.\n\nManage your appointments: ${manageUrl}\nTo change or cancel, please use the link above (sign in with the email you booked with: ${profile.email || "your booking email"}). Changes are accepted up to 24 hours before the scheduled session.\n\nCancellation policy: Cancellations or no-shows within 24 hours of the scheduled session are subject to a $30 fee per 30-minute session, billed at the next lesson.`;
       sendEmail({
         to: profile.email,
         subject: `Booking confirmed: ${profile.playerName} — ${expanded.length} session${expanded.length === 1 ? "" : "s"}`,
@@ -488,7 +492,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }).catch(e => console.error("parent email send error:", e));
     }
     if ((channel === "sms" || channel === "both") && profile.phone) {
-      const smsBody = `${coachName}: ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed:\n${sessionLines}\n\nManage: ${manageUrl}\n\nCancel/reschedule yourself up to 24h before. Reply STOP to opt out.`;
+      const smsBody = `${coachName}: ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed.\n${sessionLines}\nManage: ${manageUrl}\n\nCancellations within 24 hrs are subject to a $30/session fee. Reply STOP to opt out.`;
       sendSms(profile.phone, smsBody).catch(e => console.error("sms confirmation error:", e));
     }
 
@@ -512,6 +516,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const rows = storage.getBookingsForProfile(profile.id).map(b => storage.expandBooking(b));
     rows.sort((a, b) => a.start.localeCompare(b.start));
     res.json({ profile, bookings: rows });
+  });
+
+  // List bookings for a profile (self-service lookup by EMAIL)
+  app.get("/api/my-bookings-by-email/:email", (req, res) => {
+    const profile = storage.getProfileByEmail(decodeURIComponent(req.params.email));
+    if (!profile) return res.json({ profile: null, bookings: [] });
+    const rows = storage.getBookingsForProfile(profile.id).map(b => storage.expandBooking(b));
+    rows.sort((a, b) => a.start.localeCompare(b.start));
+    res.json({ profile, bookings: rows });
+  });
+
+  // Self-service profile update — requires matching email or phone (acts as proof of ownership)
+  app.patch("/api/profile/:id", (req, res) => {
+    const id = Number(req.params.id);
+    const existing = storage.getProfileById(id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    const isAdmin = !!(req as any).session?.admin;
+    if (!isAdmin) {
+      // Customer must prove ownership by matching CURRENT email or CURRENT phone
+      const proofEmail = String(req.body?.proofEmail || "").trim().toLowerCase();
+      const proofPhone = normalizePhone(String(req.body?.proofPhone || ""));
+      const emailMatch = !!proofEmail && (existing.email || "").trim().toLowerCase() === proofEmail;
+      const phoneMatch = !!proofPhone && existing.phone === proofPhone;
+      if (!emailMatch && !phoneMatch) {
+        return res.status(403).json({ error: "Verification failed. Please match the email or phone on file." });
+      }
+    }
+    const patch: any = {};
+    if (typeof req.body?.email === "string") patch.email = req.body.email.trim();
+    if (typeof req.body?.parentName === "string" && req.body.parentName.trim()) patch.parentName = req.body.parentName.trim();
+    if (typeof req.body?.playerName === "string" && req.body.playerName.trim()) patch.playerName = req.body.playerName.trim();
+    if (typeof req.body?.phone === "string") patch.phone = req.body.phone;
+    if (typeof req.body?.notes === "string") patch.notes = req.body.notes;
+    // If changing phone, ensure no conflict with another profile
+    if (patch.phone) {
+      const collides = storage.getProfileByPhone(patch.phone);
+      if (collides && collides.id !== id) {
+        return res.status(409).json({ error: "That phone number is already used by another account." });
+      }
+    }
+    const updated = storage.updateProfile(id, patch);
+    res.json(updated);
   });
 
   // Cancel single booking (customer or admin)
