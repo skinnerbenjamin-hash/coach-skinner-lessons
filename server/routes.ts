@@ -543,9 +543,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const parsed = checkoutSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    const { slots, phone, email, parentName, playerName, notes } = parsed.data;
+    const { slots, phone, email, parentName, playerName, notes, lessonTypeId, participants } = parsed.data;
     const isAdmin = isAdminReq(req);
-    // upsert profile
+    // upsert profile (primary booker)
     const profile = storage.upsertProfile(tenantId, { phone: normalizePhone(phone), email, parentName, playerName, notes });
     // Customers can't book inside 24h or beyond MAX_BOOKING_DAYS; admins bypass both.
     if (!isAdmin && slots.some(s => isWithin24h(s))) {
@@ -553,6 +553,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     if (!isAdmin && slots.some(s => isBeyondMaxWindow(s))) {
       return res.status(400).json({ error: `Bookings can be made up to ${MAX_BOOKING_DAYS} days in advance.` });
+    }
+    // Resolve lesson type and enforce capacity for group bookings.
+    let resolvedLessonTypeId: number | null = null;
+    let lessonCapacity = 1;
+    if (lessonTypeId) {
+      const lt = storage.getLessonTypeById(tenantId, lessonTypeId);
+      if (!lt) return res.status(400).json({ error: "Invalid lesson type for this site." });
+      if (lt.active !== 1 && !isAdmin) {
+        return res.status(400).json({ error: "That lesson type isn't currently bookable." });
+      }
+      resolvedLessonTypeId = lt.id;
+      lessonCapacity = lt.capacity;
+    }
+    const totalParticipants = 1 + participants.length;
+    if (totalParticipants > lessonCapacity) {
+      return res.status(400).json({
+        error: `This lesson allows up to ${lessonCapacity} participant${lessonCapacity === 1 ? "" : "s"}. You tried to book ${totalParticipants}.`,
+      });
     }
     // collision check
     const existing = storage.getBookingsByStarts(tenantId, slots);
@@ -564,8 +582,40 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     const bookingGroup = randomUUID();
     const rows = storage.createBookings(tenantId, slots.map(s => ({
-      start: s, profileId: profile.id, bookingGroup, createdAt: Date.now(), lessonTypeId: null,
+      start: s, profileId: profile.id, bookingGroup, createdAt: Date.now(), lessonTypeId: resolvedLessonTypeId,
     })));
+    // Build participant profile id list: primary booker first, then each extra.
+    // Strategy:
+    //  - Extra with their own unique phone -> upsertProfile (normal merge).
+    //  - Extra without a phone (parent booking 2+ of their own kids) -> insert
+    //    a fresh profile row directly so we don't collide on phone uniqueness.
+    const participantProfileIds: number[] = [profile.id];
+    const primaryPhoneNormalized = normalizePhone(phone);
+    for (const p of participants) {
+      const explicitPhone = normalizePhone(p.phone);
+      if (explicitPhone && explicitPhone !== primaryPhoneNormalized) {
+        const pProfile = storage.upsertProfile(tenantId, {
+          phone: explicitPhone,
+          email: p.email || email,
+          parentName: p.parentName,
+          playerName: p.playerName,
+          notes: p.notes || "",
+        });
+        participantProfileIds.push(pProfile.id);
+      } else {
+        // Sibling: insert a fresh profile row that won't collide with the
+        // primary booker on the (tenant_id, phone) unique index. Use a
+        // synthetic key that includes primary phone + random suffix; this
+        // is non-digit so phone lookups against real phones still miss it.
+        const syntheticPhone = `${primaryPhoneNormalized}-p${randomUUID().slice(0, 8)}`;
+        const inserted = sqlite.prepare(
+          `INSERT INTO profiles (tenant_id, phone, email, parent_name, player_name, notes, photo_path, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, '', ?)`,
+        ).run(tenantId, syntheticPhone, p.email || email, p.parentName, p.playerName, p.notes || "", Date.now());
+        participantProfileIds.push(Number(inserted.lastInsertRowid));
+      }
+    }
+    storage.addBookingParticipants(tenantId, bookingGroup, participantProfileIds);
     for (const r of rows) {
       scheduleRemindersForBooking(r.id, r.start, profile.phone, profile.playerName, profile.email);
     }

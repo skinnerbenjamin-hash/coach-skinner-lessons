@@ -301,6 +301,18 @@ export function normalizePhone(p: string) { return (p || "").replace(/\D+/g, "")
 
 export const profileLookupSchema = z.object({ phone: z.string().min(7) });
 
+// Additional participants for a group booking (beyond the primary booker).
+// Each extra participant gets its own profile row keyed by phone (falls back
+// to primary booker's phone if blank) and is added to booking_participants.
+export const checkoutParticipantSchema = z.object({
+  parentName: z.string().min(1),
+  playerName: z.string().min(1),
+  phone: z.string().default(""),
+  email: z.string().default(""),
+  notes: z.string().default(""),
+});
+export type CheckoutParticipant = z.infer<typeof checkoutParticipantSchema>;
+
 export const checkoutSchema = z.object({
   slots: z.array(z.string()).min(1),
   phone: z.string().min(7),
@@ -308,6 +320,9 @@ export const checkoutSchema = z.object({
   parentName: z.string().min(1),
   playerName: z.string().min(1),
   notes: z.string().default(""),
+  lessonTypeId: z.number().int().positive().optional(),
+  // Extra group participants beyond the primary booker. Empty/omitted for solo.
+  participants: z.array(checkoutParticipantSchema).default([]),
 });
 export type CheckoutPayload = z.infer<typeof checkoutSchema>;
 

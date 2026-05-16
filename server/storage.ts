@@ -1,5 +1,5 @@
 import {
-  availability, bookings, dateOverrides, profiles, coachingNotes, resources, lessonTypes, normalizePhone,
+  availability, bookings, dateOverrides, profiles, coachingNotes, resources, lessonTypes, bookingParticipants, normalizePhone,
 } from '@shared/schema';
 import type {
   Availability, InsertAvailability,
@@ -9,6 +9,7 @@ import type {
   CoachingNote, InsertCoachingNote,
   Resource, InsertResource,
   LessonType, InsertLessonType,
+  BookingParticipant,
 } from '@shared/schema';
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -313,6 +314,10 @@ export class DatabaseStorage {
     db.delete(bookings)
       .where(and(eq(bookings.tenantId, tenantId), eq(bookings.bookingGroup, groupId)))
       .run();
+    // Also clean up participants for this group.
+    db.delete(bookingParticipants)
+      .where(and(eq(bookingParticipants.tenantId, tenantId), eq(bookingParticipants.bookingGroup, groupId)))
+      .run();
   }
 
   // resources
@@ -375,6 +380,32 @@ export class DatabaseStorage {
   deleteLessonType(tenantId: number, id: number) {
     db.delete(lessonTypes)
       .where(and(eq(lessonTypes.tenantId, tenantId), eq(lessonTypes.id, id)))
+      .run();
+  }
+
+  // ===== Booking participants (per tenant) =====
+  addBookingParticipants(tenantId: number, bookingGroup: string, profileIds: number[]) {
+    if (profileIds.length === 0) return;
+    const stmt = sqlite.prepare(
+      `INSERT INTO booking_participants (tenant_id, booking_group, profile_id, created_at) VALUES (?, ?, ?, ?)`,
+    );
+    const insertMany = sqlite.transaction((ids: number[]) => {
+      const now = Date.now();
+      for (const pid of ids) stmt.run(tenantId, bookingGroup, pid, now);
+    });
+    insertMany(profileIds);
+  }
+  getParticipantsForGroup(tenantId: number, bookingGroup: string): BookingParticipant[] {
+    return db.select().from(bookingParticipants)
+      .where(and(eq(bookingParticipants.tenantId, tenantId), eq(bookingParticipants.bookingGroup, bookingGroup)))
+      .all();
+  }
+  countParticipantsForGroup(tenantId: number, bookingGroup: string): number {
+    return this.getParticipantsForGroup(tenantId, bookingGroup).length;
+  }
+  deleteParticipantsForGroup(tenantId: number, bookingGroup: string) {
+    db.delete(bookingParticipants)
+      .where(and(eq(bookingParticipants.tenantId, tenantId), eq(bookingParticipants.bookingGroup, bookingGroup)))
       .run();
   }
 
