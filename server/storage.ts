@@ -51,7 +51,10 @@ sqlite.exec(`
     booking_group TEXT NOT NULL,
     created_at INTEGER NOT NULL
   );
-  CREATE UNIQUE INDEX IF NOT EXISTS bookings_start_unique ON bookings(start);
+  -- Note: the legacy UNIQUE(start) index used to live here. It was incompatible
+  -- with multi-tenancy AND group lessons (multiple bookings can share a start).
+  -- The replacement non-unique composite index on (tenant_id, start) is created
+  -- by migrations.ts step 8, after tenant_id has been added to the table.
   CREATE TABLE IF NOT EXISTS date_overrides (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     date TEXT NOT NULL,

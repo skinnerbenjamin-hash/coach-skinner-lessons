@@ -33,8 +33,8 @@ type CoachingNote = { id: number; profileId: number; author: "coach" | "parent";
 function initialsFor(name: string): string {
   return (name || "?").trim().split(/\s+/).slice(0, 2).map(p => p[0] || "").join("").toUpperCase() || "?";
 }
-type Availability = { id: number; dayOfWeek: number; startTime: string; endTime: string };
-type DateOverride = { id: number; date: string; type: string; startTime: string | null; endTime: string | null };
+type Availability = { id: number; dayOfWeek: number; startTime: string; endTime: string; mode?: "solo" | "group" | "both" };
+type DateOverride = { id: number; date: string; type: string; startTime: string | null; endTime: string | null; mode?: "solo" | "group" | "both" };
 
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -462,17 +462,21 @@ function AvailabilityPanel() {
   const { data, isLoading } = useQuery<{ weekly: Availability[]; overrides: DateOverride[] }>({
     queryKey: ["/api/availability"],
   });
-  // editable per-day open/close
-  const [draft, setDraft] = useState<Record<number, { enabled: boolean; start: string; end: string }>>({});
+  // editable per-day open/close + lesson-type mode
+  // mode: "both" = solo OR group can book this window (default)
+  //       "solo" = only solo lesson types
+  //       "group" = only group lesson types
+  type DayDraft = { enabled: boolean; start: string; end: string; mode: "solo" | "group" | "both" };
+  const [draft, setDraft] = useState<Record<number, DayDraft>>({});
 
   useMemo(() => {
     if (!data) return;
-    const next: typeof draft = {};
+    const next: Record<number, DayDraft> = {};
     for (let d = 0; d < 7; d++) {
       const found = data.weekly.find(w => w.dayOfWeek === d);
       next[d] = found
-        ? { enabled: true, start: found.startTime, end: found.endTime }
-        : { enabled: false, start: "08:00", end: "18:00" };
+        ? { enabled: true, start: found.startTime, end: found.endTime, mode: (found.mode as DayDraft["mode"]) ?? "both" }
+        : { enabled: false, start: "08:00", end: "18:00", mode: "both" };
     }
     setDraft(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -480,10 +484,10 @@ function AvailabilityPanel() {
 
   const save = useMutation({
     mutationFn: async () => {
-      const rows: { dayOfWeek: number; startTime: string; endTime: string }[] = [];
+      const rows: { dayOfWeek: number; startTime: string; endTime: string; mode: string }[] = [];
       for (let d = 0; d < 7; d++) {
         const row = draft[d];
-        if (row?.enabled) rows.push({ dayOfWeek: d, startTime: row.start, endTime: row.end });
+        if (row?.enabled) rows.push({ dayOfWeek: d, startTime: row.start, endTime: row.end, mode: row.mode });
       }
       await apiRequest("PUT", "/api/availability", rows);
     },
@@ -504,8 +508,15 @@ function AvailabilityPanel() {
       ) : (
         <Card>
           <CardContent className="p-4 space-y-2">
+            <div className="hidden sm:grid grid-cols-[6rem_6rem_1fr_1fr_8rem] gap-2 items-center text-xs text-muted-foreground pb-1">
+              <div></div>
+              <div>Open?</div>
+              <div>Start</div>
+              <div>End</div>
+              <div>Lesson types</div>
+            </div>
             {DAYS.map((label, d) => (
-              <div key={d} className="grid grid-cols-[6rem_5rem_1fr_1fr] sm:grid-cols-[6rem_6rem_1fr_1fr_1fr] gap-2 items-center">
+              <div key={d} className="grid grid-cols-[6rem_5rem_1fr_1fr] sm:grid-cols-[6rem_6rem_1fr_1fr_8rem] gap-2 items-center">
                 <div className="font-medium">{label}</div>
                 <Select
                   value={draft[d]?.enabled ? "open" : "closed"}
@@ -531,8 +542,23 @@ function AvailabilityPanel() {
                   disabled={!draft[d]?.enabled}
                   data-testid={`input-day-${d}-end`}
                 />
+                <Select
+                  value={draft[d]?.mode ?? "both"}
+                  onValueChange={v => setDraft(s => ({ ...s, [d]: { ...s[d], mode: v as "solo" | "group" | "both" } }))}
+                  disabled={!draft[d]?.enabled}
+                >
+                  <SelectTrigger data-testid={`select-day-${d}-mode`}><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="both">Any lesson</SelectItem>
+                    <SelectItem value="solo">Solo only</SelectItem>
+                    <SelectItem value="group">Group only</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             ))}
+            <p className="text-xs text-muted-foreground pt-2">
+              Tip: pick "Group only" for days you reserve for clinics, or "Solo only" for private-lesson days. "Any lesson" lets customers pick either type in that window.
+            </p>
           </CardContent>
         </Card>
       )}
@@ -2105,6 +2131,7 @@ type LessonType = {
   name: string;
   durationMin: number;
   capacity: number;
+  isGroup: number;
   active: number;
   sortOrder: number;
   createdAt: number;
@@ -2120,8 +2147,8 @@ function LessonTypesPanel() {
   });
 
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [draft, setDraft] = useState<{ name: string; durationMin: number; capacity: number; active: number }>(
-    { name: "", durationMin: 60, capacity: 1, active: 1 },
+  const [draft, setDraft] = useState<{ name: string; durationMin: number; capacity: number; active: number; isGroup: number }>(
+    { name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0 },
   );
   const [showNew, setShowNew] = useState(false);
 
@@ -2135,7 +2162,7 @@ function LessonTypesPanel() {
       qc.invalidateQueries({ queryKey: ["/api/admin/lesson-types"] });
       qc.invalidateQueries({ queryKey: ["/api/lesson-types"] });
       setShowNew(false);
-      setDraft({ name: "", durationMin: 60, capacity: 1, active: 1 });
+      setDraft({ name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0 });
     },
     onError: (e: any) => toast({ variant: "destructive", title: "Couldn't create", description: e.message }),
   });
@@ -2168,7 +2195,7 @@ function LessonTypesPanel() {
 
   function startEdit(t: LessonType) {
     setEditingId(t.id);
-    setDraft({ name: t.name, durationMin: t.durationMin, capacity: t.capacity, active: t.active });
+    setDraft({ name: t.name, durationMin: t.durationMin, capacity: t.capacity, active: t.active, isGroup: t.isGroup ?? 0 });
   }
 
   if (isLoading || !data) return <p className="text-sm text-muted-foreground">Loading lesson types…</p>;
@@ -2214,8 +2241,23 @@ function LessonTypesPanel() {
                   data-testid="input-lesson-type-capacity" />
               </div>
             </div>
+            <div className="flex items-center gap-2">
+              <input id="new-lt-isgroup" type="checkbox" className="h-4 w-4"
+                checked={draft.isGroup === 1}
+                onChange={e => setDraft(d => ({
+                  ...d,
+                  isGroup: e.target.checked ? 1 : 0,
+                  // sensible default: group lessons usually have capacity > 1
+                  capacity: e.target.checked && d.capacity < 2 ? 4 : d.capacity,
+                }))}
+                data-testid="input-lesson-type-isgroup"
+              />
+              <Label htmlFor="new-lt-isgroup" className="text-sm font-normal cursor-pointer">
+                This is a group lesson (will only show in group-tagged availability windows)
+              </Label>
+            </div>
             <div className="flex items-center justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => { setShowNew(false); setDraft({ name: "", durationMin: 60, capacity: 1, active: 1 }); }}>Cancel</Button>
+              <Button variant="outline" size="sm" onClick={() => { setShowNew(false); setDraft({ name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0 }); }}>Cancel</Button>
               <Button size="sm" onClick={() => createMut.mutate(draft)} disabled={!draft.name.trim() || createMut.isPending} data-testid="button-lesson-type-create">
                 {createMut.isPending ? "Creating…" : "Create"}
               </Button>
@@ -2230,13 +2272,14 @@ function LessonTypesPanel() {
                 <th className="p-2 font-medium">Name</th>
                 <th className="p-2 font-medium">Duration</th>
                 <th className="p-2 font-medium">Capacity</th>
+                <th className="p-2 font-medium">Type</th>
                 <th className="p-2 font-medium">Status</th>
                 <th className="p-2 font-medium text-right">Actions</th>
               </tr>
             </thead>
             <tbody>
               {types.length === 0 && (
-                <tr><td colSpan={5} className="p-6 text-center text-sm text-muted-foreground">No lesson types yet. Add one above.</td></tr>
+                <tr><td colSpan={6} className="p-6 text-center text-sm text-muted-foreground">No lesson types yet. Add one above.</td></tr>
               )}
               {types.map(t => {
                 const editing = editingId === t.id;
@@ -2259,6 +2302,13 @@ function LessonTypesPanel() {
                             className="w-20" />
                         </td>
                         <td className="p-2">
+                          <select className="border rounded-md h-9 px-2 bg-background" value={draft.isGroup}
+                            onChange={e => setDraft(d => ({ ...d, isGroup: Number(e.target.value) }))}>
+                            <option value={0}>Solo</option>
+                            <option value={1}>Group</option>
+                          </select>
+                        </td>
+                        <td className="p-2">
                           <select className="border rounded-md h-9 px-2 bg-background" value={draft.active}
                             onChange={e => setDraft(d => ({ ...d, active: Number(e.target.value) }))}>
                             <option value={1}>Active</option>
@@ -2279,6 +2329,11 @@ function LessonTypesPanel() {
                         <td className="p-2 font-medium">{t.name}</td>
                         <td className="p-2">{t.durationMin} min</td>
                         <td className="p-2">{t.capacity > 1 ? `${t.capacity} (group)` : "1 (private)"}</td>
+                        <td className="p-2">
+                          <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${t.isGroup === 1 ? "bg-blue-100 text-blue-800" : "bg-amber-100 text-amber-800"}`}>
+                            {t.isGroup === 1 ? "Group" : "Solo"}
+                          </span>
+                        </td>
                         <td className="p-2">
                           <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${t.active === 1 ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-700"}`}>
                             {t.active === 1 ? "Active" : "Inactive"}

@@ -19,12 +19,18 @@ import {
   Check, AlertTriangle, X, Camera, Search,
 } from "lucide-react";
 import { Avatar, AvatarImage, AvatarFallback } from "@/components/ui/avatar";
+import {
+  Dialog, DialogContent, DialogDescription, DialogFooter,
+  DialogHeader, DialogTitle,
+} from "@/components/ui/dialog";
 import { useTenantLabels } from "@/hooks/use-tenant";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
 type SlotsResponse = {
-  days: { date: string; slots: { start: string; booked: boolean }[] }[];
+  days: { date: string; slots: { start: string; booked: boolean; remainingSpots?: number }[] }[];
+  maxBookingDays?: number;
+  waitlistEnabled?: boolean;
 };
 type GapWarning = {
   date: string; gapStart: string; gapEnd: string; gapMinutes: number;
@@ -38,6 +44,7 @@ type LessonType = {
   name: string;
   durationMin: number;
   capacity: number;
+  isGroup: number;
   active: number;
 };
 type LessonTypesResponse = { lessonTypes: LessonType[] };
@@ -112,14 +119,63 @@ export default function Book() {
     bookings: { start: string }[]; ics: string; coachTextPhone: string; coachName: string; manageUrl: string;
   }>(null);
 
-  // fetch availability
+  // Waitlist (Phase 2): when a customer clicks 'Waitlist' on a full group slot
+  // we open a confirmation dialog that uses the form info they've already
+  // entered in step 1, then POSTs to /api/waitlist.
+  const [waitlistSlot, setWaitlistSlot] = useState<string | null>(null);
+  const [waitlistBusy, setWaitlistBusy] = useState(false);
+  const [waitlistDone, setWaitlistDone] = useState<{ slot: string } | null>(null);
+
+  // fetch availability — includes selectedLessonTypeId so server can filter
+  // slots by window mode (solo/group/both). Without a selection, server returns
+  // all slots (admin view).
   const { data: slotsData, isLoading: slotsLoading } = useQuery<SlotsResponse>({
-    queryKey: ["/api/slots", weekStart, weekEnd],
+    queryKey: ["/api/slots", weekStart, weekEnd, selectedLessonTypeId],
     queryFn: async () => {
-      const r = await apiRequest("GET", `/api/slots?start=${weekStart}&end=${weekEnd}`);
+      const ltParam = selectedLessonTypeId ? `&lessonTypeId=${selectedLessonTypeId}` : "";
+      const r = await apiRequest("GET", `/api/slots?start=${weekStart}&end=${weekEnd}${ltParam}`);
       return r.json();
     },
   });
+
+  // When the lesson type changes, drop any previously-selected slots so the
+  // user doesn't accidentally book a 30-min slot as part of a 1-hour lesson.
+  useEffect(() => {
+    setSelected(new Set());
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedLessonTypeId]);
+
+  // Frontend duration filter: for lesson types longer than 30 min, disable
+  // slot starts whose subsequent SLOT_MIN windows (within the same day) are
+  // either booked or fall outside the day's open windows. The server enforces
+  // this for real, but the UI disables them eagerly so users don't pick a
+  // start time that can't fit.
+  const SLOT_MIN = 30;
+  const durationMin = selectedLessonType?.durationMin ?? SLOT_MIN;
+  const slotsNeeded = Math.max(1, Math.ceil(durationMin / SLOT_MIN));
+  const augmentedDays = useMemo(() => {
+    if (!slotsData) return undefined;
+    if (slotsNeeded <= 1) return slotsData.days;
+    return slotsData.days.map(day => {
+      const slotsByStart = new Map(day.slots.map(s => [s.start, s]));
+      const augmented = day.slots.map(s => {
+        if (s.booked) return s;
+        const startMs = new Date(s.start + ":00").getTime();
+        for (let i = 1; i < slotsNeeded; i++) {
+          const next = new Date(startMs + i * SLOT_MIN * 60_000);
+          const nextIso =
+            `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}` +
+            `T${String(next.getHours()).padStart(2, "0")}:${String(next.getMinutes()).padStart(2, "0")}`;
+          const nextSlot = slotsByStart.get(nextIso);
+          if (!nextSlot || nextSlot.booked) {
+            return { ...s, booked: true };
+          }
+        }
+        return s;
+      });
+      return { ...day, slots: augmented };
+    });
+  }, [slotsData, slotsNeeded]);
 
   // lookup existing profile when phone is typed
   const lookupProfile = async (p: string) => {
@@ -600,14 +656,18 @@ export default function Book() {
 
           {slotsLoading && <SkeletonGrid />}
 
-          {!slotsLoading && slotsData && (
+          {!slotsLoading && augmentedDays && (
             <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-              {slotsData.days.map(d => (
+              {augmentedDays.map(d => (
+              
                 <DayCard
                   key={d.date}
                   date={d.date}
                   slots={d.slots}
                   selected={selected}
+                  waitlistEnabled={!!slotsData?.waitlistEnabled}
+                  isGroupLesson={selectedLessonType?.isGroup === 1}
+                  onWaitlist={(s) => setWaitlistSlot(s)}
                   onToggle={(s) => {
                     setSelected(prev => {
                       const next = new Set(prev);
@@ -826,6 +886,127 @@ export default function Book() {
           </CardContent>
         </Card>
       )}
+
+      {/* Phase 2: Waitlist signup dialog. Opens when a customer clicks the
+          'Waitlist' button on a full group slot. Uses the form info they've
+          already entered in step 1; if those are missing we tell them to
+          fill out step 1 first. */}
+      <Dialog open={!!waitlistSlot} onOpenChange={(open) => { if (!open) setWaitlistSlot(null); }}>
+        <DialogContent data-testid="dialog-waitlist">
+          <DialogHeader>
+            <DialogTitle>Join the waitlist</DialogTitle>
+            <DialogDescription>
+              This session is full. We'll email you the moment a spot opens up
+              — first come, first served.
+            </DialogDescription>
+          </DialogHeader>
+          {waitlistSlot && (
+            <div className="space-y-3 text-sm">
+              <div className="rounded-md border bg-muted/40 px-3 py-2">
+                <div className="font-medium">
+                  {formatDateLong(waitlistSlot.split("T")[0])} at {formatTime(waitlistSlot.split("T")[1])}
+                </div>
+                {selectedLessonType && (
+                  <div className="text-xs text-muted-foreground mt-0.5">{selectedLessonType.name}</div>
+                )}
+              </div>
+              {(!parentName || !playerName || !phone || !email) ? (
+                <Alert>
+                  <AlertTriangle className="h-4 w-4" />
+                  <AlertDescription>
+                    Please complete the player & parent info form first, then come back to join the waitlist.
+                  </AlertDescription>
+                </Alert>
+              ) : (
+                <div className="text-xs text-muted-foreground space-y-0.5">
+                  <div><b>Parent:</b> {parentName}</div>
+                  <div><b>Player:</b> {playerName}</div>
+                  <div><b>Email:</b> {email}</div>
+                  <div><b>Phone:</b> {phone}</div>
+                </div>
+              )}
+            </div>
+          )}
+          <DialogFooter>
+            <Button
+              variant="outline"
+              onClick={() => setWaitlistSlot(null)}
+              data-testid="button-waitlist-cancel"
+            >
+              Cancel
+            </Button>
+            <Button
+              disabled={waitlistBusy || !waitlistSlot || !parentName || !playerName || !phone || !email || !selectedLessonType}
+              data-testid="button-waitlist-submit"
+              onClick={async () => {
+                if (!waitlistSlot || !selectedLessonType) return;
+                setWaitlistBusy(true);
+                try {
+                  const r = await fetch(`${API_BASE}/api/waitlist`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                      start: waitlistSlot,
+                      lessonTypeId: selectedLessonType.id,
+                      parentName, playerName,
+                      phone: normalizePhone(phone), email: email.trim(),
+                      notes: "",
+                      participantsCount: 1 + participants.filter(p => p.playerName.trim()).length,
+                    }),
+                  });
+                  if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    toast({
+                      title: "Couldn't join the waitlist",
+                      description: typeof err?.error === "string" ? err.error : "Please try again.",
+                      variant: "destructive",
+                    });
+                  } else {
+                    setWaitlistDone({ slot: waitlistSlot });
+                    setWaitlistSlot(null);
+                  }
+                } catch (e: any) {
+                  toast({
+                    title: "Couldn't join the waitlist",
+                    description: e?.message || "Please try again.",
+                    variant: "destructive",
+                  });
+                } finally {
+                  setWaitlistBusy(false);
+                }
+              }}
+            >
+              {waitlistBusy ? "Adding…" : "Join waitlist"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Waitlist success confirmation */}
+      <Dialog open={!!waitlistDone} onOpenChange={(open) => { if (!open) setWaitlistDone(null); }}>
+        <DialogContent data-testid="dialog-waitlist-success">
+          <DialogHeader>
+            <DialogTitle>You're on the waitlist</DialogTitle>
+            <DialogDescription>
+              {waitlistDone && (
+                <>
+                  We'll email you at <b>{email}</b> if a spot opens up for the session on{" "}
+                  <b>{formatDateLong(waitlistDone.slot.split("T")[0])} at {formatTime(waitlistDone.slot.split("T")[1])}</b>.
+                  First come, first served — if it opens you'll need to click through and book it.
+                </>
+              )}
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button
+              onClick={() => setWaitlistDone(null)}
+              data-testid="button-waitlist-success-close"
+            >
+              Got it
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -860,10 +1041,14 @@ function Stepper({ step }: { step: Step }) {
 }
 
 function DayCard({
-  date, slots, selected, onToggle,
+  date, slots, selected, onToggle, onWaitlist, waitlistEnabled, isGroupLesson,
 }: {
-  date: string; slots: { start: string; booked: boolean }[];
+  date: string;
+  slots: { start: string; booked: boolean; remainingSpots?: number }[];
   selected: Set<string>; onToggle: (s: string) => void;
+  onWaitlist?: (slot: string) => void;
+  waitlistEnabled?: boolean;
+  isGroupLesson?: boolean;
 }) {
   const todayDate = todayISO();
   const isPast = date < todayDate;
@@ -885,6 +1070,38 @@ function DayCard({
               const isSelected = selected.has(s.start);
               const time = s.start.split("T")[1];
               const disabled = s.booked || isPast;
+              // Only show 'X left' for group lessons (remainingSpots present)
+              // when the slot is still open and nearly full (≤2).
+              const showRemaining =
+                !disabled &&
+                typeof s.remainingSpots === "number" &&
+                s.remainingSpots <= 2 &&
+                s.remainingSpots > 0;
+              // Waitlist eligibility: full group slot (remainingSpots === 0
+              // means same-type capacity hit; undefined means a different
+              // lesson type holds it — we don't waitlist for those). Hide on
+              // past dates and when feature disabled.
+              const showWaitlist =
+                disabled &&
+                !isPast &&
+                !!waitlistEnabled &&
+                !!isGroupLesson &&
+                s.remainingSpots === 0 &&
+                !!onWaitlist;
+              if (showWaitlist) {
+                return (
+                  <button
+                    key={s.start}
+                    onClick={() => onWaitlist!(s.start)}
+                    data-testid={`button-waitlist-${s.start}`}
+                    className="text-xs px-2 py-1.5 rounded-md border border-amber-500/60 bg-amber-50 dark:bg-amber-950/30 text-amber-800 dark:text-amber-200 hover-elevate flex flex-col items-center gap-0.5"
+                    title="This session is full. Join the waitlist and we'll email you if a spot opens up."
+                  >
+                    <span>{formatTime(time)}</span>
+                    <span className="text-[10px] font-semibold uppercase tracking-wide">Waitlist</span>
+                  </button>
+                );
+              }
               return (
                 <button
                   key={s.start}
@@ -892,7 +1109,7 @@ function DayCard({
                   onClick={() => onToggle(s.start)}
                   data-testid={`button-slot-${s.start}`}
                   className={
-                    "text-xs px-2 py-1.5 rounded-md border transition-colors " +
+                    "text-xs px-2 py-1.5 rounded-md border transition-colors flex flex-col items-center gap-0.5 " +
                     (disabled
                       ? "border-border bg-muted/40 text-muted-foreground line-through cursor-not-allowed"
                       : isSelected
@@ -900,7 +1117,22 @@ function DayCard({
                         : "border-border hover-elevate")
                   }
                 >
-                  {formatTime(time)}
+                  <span>{formatTime(time)}</span>
+                  {showRemaining && (
+                    <span
+                      data-testid={`text-remaining-${s.start}`}
+                      className={
+                        "text-[10px] font-semibold uppercase tracking-wide " +
+                        (isSelected
+                          ? "text-primary-foreground/90"
+                          : s.remainingSpots === 1
+                            ? "text-destructive"
+                            : "text-amber-600 dark:text-amber-400")
+                      }
+                    >
+                      {s.remainingSpots === 1 ? "LAST SPOT" : `${s.remainingSpots} LEFT`}
+                    </span>
+                  )}
                 </button>
               );
             })}

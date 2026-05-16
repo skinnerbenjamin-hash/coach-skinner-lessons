@@ -410,4 +410,54 @@ export function runMigrations(sqlite: DB) {
        ON bookings(tenant_id, start)`
     );
   }
+
+  // ---- 9. Lesson-mode windows (Phase 2) -------------------------------
+  // Coaches can now mark availability windows (and one-off extra-open
+  // overrides) as solo-only, group-only, or both. Lesson types get a
+  // matching is_group flag. Customer slot picker filters slots so that a
+  // solo lesson only appears in solo/both windows, and likewise for group.
+  //
+  // All new columns default to legacy-safe values:
+  //   - lesson_types.is_group default 0 (everything pre-Phase-2 is solo)
+  //   - availability.mode default 'both' (windows are unrestricted)
+  //   - date_overrides.mode default 'both'
+  if (tableExists(sqlite, "lesson_types") && !columnExists(sqlite, "lesson_types", "is_group")) {
+    sqlite.exec(`ALTER TABLE lesson_types ADD COLUMN is_group INTEGER NOT NULL DEFAULT 0`);
+    // Heuristic: any seeded/existing lesson type with capacity > 1 is a group lesson.
+    sqlite.exec(`UPDATE lesson_types SET is_group = 1 WHERE capacity > 1`);
+  }
+  if (tableExists(sqlite, "availability") && !columnExists(sqlite, "availability", "mode")) {
+    sqlite.exec(`ALTER TABLE availability ADD COLUMN mode TEXT NOT NULL DEFAULT 'both'`);
+  }
+  if (tableExists(sqlite, "date_overrides") && !columnExists(sqlite, "date_overrides", "mode")) {
+    sqlite.exec(`ALTER TABLE date_overrides ADD COLUMN mode TEXT NOT NULL DEFAULT 'both'`);
+  }
+
+  // ---- 10. Waitlist (Phase 2) -----------------------------------------
+  // Customers can opt into a waitlist for full group slots. When a booking
+  // for that (slot, lesson type) is cancelled, every name on the waitlist
+  // for that exact (start, lesson_type_id) is notified. They race to claim.
+  // Per-tenant. waitlist_enabled is stored in settings keyed per tenant.
+  if (!tableExists(sqlite, "waitlist")) {
+    sqlite.exec(`
+      CREATE TABLE waitlist (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL,
+        start TEXT NOT NULL,
+        lesson_type_id INTEGER NOT NULL,
+        parent_name TEXT NOT NULL,
+        player_name TEXT NOT NULL,
+        phone TEXT NOT NULL,
+        email TEXT NOT NULL DEFAULT '',
+        notes TEXT NOT NULL DEFAULT '',
+        participants_count INTEGER NOT NULL DEFAULT 1,
+        notified_at INTEGER,
+        created_at INTEGER NOT NULL
+      )
+    `);
+    sqlite.exec(
+      `CREATE INDEX IF NOT EXISTS waitlist_tenant_slot_idx
+       ON waitlist(tenant_id, start, lesson_type_id)`
+    );
+  }
 }

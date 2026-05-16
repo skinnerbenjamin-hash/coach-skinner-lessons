@@ -21,6 +21,9 @@ declare global {
     interface Request {
       tenantId?: number;
       tenant?: TenantRow | null;
+      // True when the host is the apex (lessonspot.app or www.lessonspot.app).
+      // Static handler renders a marketing landing instead of a tenant page.
+      isApex?: boolean;
     }
   }
 }
@@ -112,7 +115,18 @@ export function createTenantMiddleware(sqlite: Database.Database) {
       }
     }
 
-    // 2. <slug>.lessonspot.app subdomain match
+    // 2a. Apex host (lessonspot.app, www.lessonspot.app) -> marketing site.
+    //     We don't attach a tenant; the static handler reads req.isApex and
+    //     serves the marketing landing.  API routes that require a tenant
+    //     will 404 here, which is correct -- marketing has no tenant data.
+    if (host === "lessonspot.app" || host === "www.lessonspot.app") {
+      req.tenant = null;
+      req.tenantId = undefined;
+      req.isApex = true;
+      return next();
+    }
+
+    // 2b. <slug>.lessonspot.app subdomain match
     if (host.endsWith(APEX_SUFFIX)) {
       const slug = host.slice(0, -APEX_SUFFIX.length);
       // Reserve `www` and `app` for the marketing site (handled separately).

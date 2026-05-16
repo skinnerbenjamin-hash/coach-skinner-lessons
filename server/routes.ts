@@ -4,7 +4,7 @@ import { storage, sqlite } from "./storage";
 import { requireTenantId, getTenantById } from "./tenant";
 import {
   checkoutSchema, insertAvailabilitySchema, insertDateOverrideSchema,
-  insertProfileSchema, normalizePhone,
+  insertProfileSchema, normalizePhone, insertWaitlistSchema,
 } from "@shared/schema";
 import type { Booking, BookingWithProfile } from "@shared/schema";
 import { randomUUID } from "node:crypto";
@@ -25,6 +25,7 @@ import {
   setSessionCookie, clearSessionCookie, getTokenFromReq, updateCredentials, getAdminPhone,
   listAdminUsers, addAdminUser, deleteAdminUser,
 } from "./auth";
+import { checkSlug, createTenantAndOwner } from "./signup";
 import { insertResourceSchema, RESOURCE_CATEGORIES, insertLessonTypeSchema } from "@shared/schema";
 
 startReminderLoop();
@@ -139,43 +140,153 @@ function formatDateLong(d: string) {
   });
 }
 
-// open windows (in minutes-from-midnight) for a given local date
-function openWindowsForDate(tenantId: number, date: string) {
+// open windows (in minutes-from-midnight) for a given local date.
+// Each window now carries a mode: "solo" | "group" | "both" so the booking
+// page can filter slots by selected lesson type. Overlapping windows with the
+// same mode are merged; windows with different modes are kept separate so a
+// 6–7pm group block doesn't accidentally swallow a 7–9pm solo block.
+type OpenWindow = { start: number; end: number; mode: "solo" | "group" | "both" };
+function normalizeMode(m: string | null | undefined): OpenWindow["mode"] {
+  if (m === "solo" || m === "group") return m;
+  return "both";
+}
+function openWindowsForDate(tenantId: number, date: string): OpenWindow[] {
   const overrides = storage.getDateOverrides(tenantId).filter(o => o.date === date);
   if (overrides.some(o => o.type === "closed")) return [];
   const dow = dayOfWeek(date);
   const base = storage.getAvailability(tenantId).filter(a => a.dayOfWeek === dow);
-  const wins = base.map(b => ({ start: timeToMin(b.startTime), end: timeToMin(b.endTime) }));
+  const wins: OpenWindow[] = base.map(b => ({
+    start: timeToMin(b.startTime),
+    end: timeToMin(b.endTime),
+    mode: normalizeMode((b as any).mode),
+  }));
   for (const o of overrides) {
     if (o.type === "extra" && o.startTime && o.endTime) {
-      wins.push({ start: timeToMin(o.startTime), end: timeToMin(o.endTime) });
+      wins.push({
+        start: timeToMin(o.startTime),
+        end: timeToMin(o.endTime),
+        mode: normalizeMode((o as any).mode),
+      });
     }
   }
-  wins.sort((a, b) => a.start - b.start);
-  const merged: { start: number; end: number }[] = [];
+  wins.sort((a, b) => a.start - b.start || (a.mode > b.mode ? 1 : -1));
+  const merged: OpenWindow[] = [];
   for (const w of wins) {
     const last = merged[merged.length - 1];
-    if (last && w.start <= last.end) last.end = Math.max(last.end, w.end);
-    else merged.push({ ...w });
+    if (last && w.start <= last.end && last.mode === w.mode) {
+      last.end = Math.max(last.end, w.end);
+    } else {
+      merged.push({ ...w });
+    }
   }
   return merged;
 }
 
-function slotsForDate(tenantId: number, date: string) {
+// Returns slot starts (ISO local) for a date. If isGroupFilter is provided, only
+// returns slots from windows whose mode is compatible:
+//   - isGroupFilter=true  -> windows with mode in {"group", "both"}
+//   - isGroupFilter=false -> windows with mode in {"solo", "both"}
+//   - isGroupFilter=null  -> all windows (legacy behavior, used by admin views)
+function slotsForDate(tenantId: number, date: string, isGroupFilter: boolean | null = null) {
   const out: string[] = [];
   for (const w of openWindowsForDate(tenantId, date)) {
+    if (isGroupFilter === true && w.mode === "solo") continue;
+    if (isGroupFilter === false && w.mode === "group") continue;
     for (let m = w.start; m + SLOT_MIN <= w.end; m += SLOT_MIN) out.push(toIso(date, minToTime(m)));
   }
   return out;
 }
 
-function availabilityForRange(tenantId: number, startDate: string, endDate: string) {
+// Counts the participants on a booking row: 1 primary + every extra in
+// booking_participants minus the primary's own profile entry. Falls back
+// gracefully if the table doesn't exist on older DBs.
+function countParticipantsOnBooking(tenantId: number, b: { profileId: number; bookingGroup: string }): number {
+  try {
+    const row = sqlite
+      .prepare(
+        `SELECT COUNT(*) AS n
+           FROM booking_participants
+          WHERE tenant_id = ? AND booking_group = ?`,
+      )
+      .get(tenantId, b.bookingGroup) as { n: number } | undefined;
+    // If we have participant rows, that count is the authoritative total
+    // (primary booker is included in the participants table). If not, fall
+    // back to 1 (just the primary).
+    return row && row.n > 0 ? row.n : 1;
+  } catch {
+    return 1;
+  }
+}
+
+// availabilityForRange returns a 30-min slot grid per date for a tenant.
+//
+// When `forLessonType` is provided (the customer has picked a lesson type),
+// the grid uses that lesson type's group/solo semantics:
+//   - Solo: slot.booked = true if ANY booking holds the slot.
+//   - Group: slot.booked = true ONLY when occupants ≥ capacity. While the
+//     slot is still bookable, we also expose `remainingSpots` so the UI can
+//     surface 'X left' / 'Last spot!' treatments. Slots already held by a
+//     DIFFERENT lesson type are always booked (the coach is busy).
+//
+// `isGroupFilter` (legacy bool path) is preserved for callers that haven't
+// migrated to passing the full lesson type — it still filters by window mode.
+function availabilityForRange(
+  tenantId: number,
+  startDate: string,
+  endDate: string,
+  forLessonType: { id: number; capacity: number; isGroup: boolean; durationMin: number } | null = null,
+) {
+  const isGroupFilter = forLessonType ? forLessonType.isGroup : null;
   const all = storage.getBookingsInRange(tenantId, startDate + "T00:00", endDate + "T23:59");
-  const bookedSet = new Set(all.map(b => b.start));
-  const days: { date: string; slots: { start: string; booked: boolean }[] }[] = [];
+  const lessonTypeDurations = new Map<number, number>();
+  const lessonTypeIsGroup = new Map<number, boolean>();
+  for (const lt of storage.listLessonTypes(tenantId)) {
+    lessonTypeDurations.set(lt.id, lt.durationMin);
+    lessonTypeIsGroup.set(lt.id, ((lt as any).isGroup ?? 0) === 1);
+  }
+  // Per-slot:
+  //   bookedSet: ANY booking holds it (regardless of lesson type).
+  //   sameTypeOccupants: total participants for THIS lesson type at this slot.
+  //   anyOtherType: a booking of a DIFFERENT lesson type holds it.
+  const bookedSet = new Set<string>();
+  const sameTypeOccupants = new Map<string, number>();
+  const anyOtherType = new Set<string>();
+  for (const b of all) {
+    const dur = b.lessonTypeId != null ? (lessonTypeDurations.get(b.lessonTypeId) ?? SLOT_MIN) : SLOT_MIN;
+    const startMs = new Date(b.start + ":00").getTime();
+    const blockCount = Math.max(1, Math.ceil(dur / SLOT_MIN));
+    const ptCount = countParticipantsOnBooking(tenantId, b);
+    for (let i = 0; i < blockCount; i++) {
+      const slotMs = startMs + i * SLOT_MIN * 60_000;
+      const d = new Date(slotMs);
+      const iso = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+      bookedSet.add(iso);
+      if (forLessonType != null && b.lessonTypeId === forLessonType.id) {
+        sameTypeOccupants.set(iso, (sameTypeOccupants.get(iso) ?? 0) + ptCount);
+      } else if (forLessonType != null) {
+        anyOtherType.add(iso);
+      }
+    }
+  }
+  const days: { date: string; slots: { start: string; booked: boolean; remainingSpots?: number }[] }[] = [];
   let cur = startDate;
   while (cur <= endDate) {
-    days.push({ date: cur, slots: slotsForDate(tenantId, cur).map(s => ({ start: s, booked: bookedSet.has(s) })) });
+    const slots = slotsForDate(tenantId, cur, isGroupFilter).map(s => {
+      if (!forLessonType) {
+        // No lesson type picked — use the legacy semantics (admin view).
+        return { start: s, booked: bookedSet.has(s) };
+      }
+      // Slot held by another lesson type — always blocked.
+      if (anyOtherType.has(s)) return { start: s, booked: true };
+      if (forLessonType.isGroup) {
+        const occupants = sameTypeOccupants.get(s) ?? 0;
+        const remaining = Math.max(0, forLessonType.capacity - occupants);
+        return { start: s, booked: remaining === 0, remainingSpots: remaining };
+      }
+      // Solo lesson type: any prior booking blocks the slot.
+      return { start: s, booked: bookedSet.has(s) };
+    });
+    days.push({ date: cur, slots });
     cur = addDays(cur, 1);
   }
   return days;
@@ -386,6 +497,45 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     setSessionCookie(res, result.token);
     res.json({ ok: true });
   });
+  // ===== Self-serve signup =====
+  // Public endpoints (no requireAdmin) — anyone can create a new tenant.
+  // Both endpoints are intentionally rate-limit-free at this stage; we'll add
+  // a tarpit if abuse shows up.
+  app.post("/api/signup/check-slug", (req, res) => {
+    const slug = String(req.body?.slug || "");
+    res.json(checkSlug(slug));
+  });
+
+  app.post("/api/signup", (req, res) => {
+    const body = req.body || {};
+    const result = createTenantAndOwner({
+      name: String(body.name || ""),
+      slug: String(body.slug || ""),
+      email: String(body.email || ""),
+      phone: String(body.phone || ""),
+      password: String(body.password || ""),
+      sport: body.sport ? String(body.sport) : undefined,
+    });
+    if (!result.ok) {
+      return res.status(400).json({ error: result.error, field: result.field });
+    }
+    // Set the session cookie for the *current* host.  The frontend will then
+    // redirect to `<slug>.lessonspot.app/admin` where the cookie won't apply
+    // (different host), and the new owner will need to log in once.  In dev
+    // (localhost) the cookie stays valid because the host doesn't change.
+    setSessionCookie(res, result.sessionToken);
+    res.json({
+      ok: true,
+      slug: result.slug,
+      tenantId: result.tenantId,
+      trialEndsAt: result.trialEndsAt,
+      // The client uses this to redirect.  In production we point at
+      // `https://<slug>.lessonspot.app/admin`; in local dev we just stay put
+      // and rely on the cookie we just set.
+      adminUrl: `https://${result.slug}.lessonspot.app/admin`,
+    });
+  });
+
   app.post("/api/auth/logout", (req, res) => {
     logout(getTokenFromReq(req));
     clearSessionCookie(res);
@@ -494,7 +644,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
-  // Slot list (public)
+  // Slot list (public).
+  // Optional ?lessonTypeId= filters slots so customers only see windows that
+  // match the selected lesson type's group flag (solo vs group). When omitted,
+  // returns all slots regardless of window mode (used by admin views).
   app.get("/api/slots", (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const start = String(req.query.start || "");
@@ -510,7 +663,32 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         effectiveEnd = new Date(maxEndMs).toISOString();
       }
     }
-    res.json({ days: availabilityForRange(tenantId, start, effectiveEnd), maxBookingDays: MAX_BOOKING_DAYS });
+    // Resolve full lesson type from optional lessonTypeId query param. When
+    // present, the slot grid filters by window mode AND computes per-slot
+    // remainingSpots for group lessons.
+    let forLessonType: { id: number; capacity: number; isGroup: boolean; durationMin: number } | null = null;
+    const ltIdParam = req.query.lessonTypeId;
+    if (ltIdParam) {
+      const ltId = Number(ltIdParam);
+      if (Number.isFinite(ltId)) {
+        const lt = storage.getLessonTypeById(tenantId, ltId);
+        if (lt) {
+          forLessonType = {
+            id: lt.id,
+            capacity: lt.capacity ?? 1,
+            isGroup: ((lt as any).isGroup ?? 0) === 1,
+            durationMin: lt.durationMin,
+          };
+        }
+      }
+    }
+    res.json({
+      days: availabilityForRange(tenantId, start, effectiveEnd, forLessonType),
+      maxBookingDays: MAX_BOOKING_DAYS,
+      // Phase 2: surface tenant-level toggles so the booking page can decide
+      // whether to render 'Join waitlist' on full slots.
+      waitlistEnabled: (getSetting("waitlistEnabled") || "1") === "1",
+    });
   });
 
   // Profiles
@@ -557,6 +735,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // Resolve lesson type and enforce capacity for group bookings.
     let resolvedLessonTypeId: number | null = null;
     let lessonCapacity = 1;
+    let resolvedIsGroup = false;
     if (lessonTypeId) {
       const lt = storage.getLessonTypeById(tenantId, lessonTypeId);
       if (!lt) return res.status(400).json({ error: "Invalid lesson type for this site." });
@@ -565,6 +744,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       resolvedLessonTypeId = lt.id;
       lessonCapacity = lt.capacity;
+      resolvedIsGroup = ((lt as any).isGroup ?? 0) === 1;
+    }
+    // Window-mode gate: every requested slot must fall inside an open window
+    // whose mode is compatible with the lesson type's isGroup flag.
+    // Admins can bypass this so they can manually slot in special cases.
+    if (!isAdmin && resolvedLessonTypeId != null) {
+      for (const s of slots) {
+        const date = isoDate(s);
+        const startMin = isoToMin(s);
+        const wins = openWindowsForDate(tenantId, date);
+        const ok = wins.some(w => {
+          if (startMin < w.start || startMin + SLOT_MIN > w.end) return false;
+          if (w.mode === "both") return true;
+          return resolvedIsGroup ? w.mode === "group" : w.mode === "solo";
+        });
+        if (!ok) {
+          return res.status(400).json({
+            error: resolvedIsGroup
+              ? "That time slot isn't open for group lessons. Please pick a group-eligible slot."
+              : "That time slot isn't open for solo lessons. Please pick a solo-eligible slot.",
+          });
+        }
+      }
     }
     const totalParticipants = 1 + participants.length;
     if (totalParticipants > lessonCapacity) {
@@ -572,12 +774,81 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         error: `This lesson allows up to ${lessonCapacity} participant${lessonCapacity === 1 ? "" : "s"}. You tried to book ${totalParticipants}.`,
       });
     }
-    // collision check
-    const existing = storage.getBookingsByStarts(tenantId, slots);
-    if (existing.length) {
+    // Duration-aware collision check.
+    // The new booking's lesson duration may span multiple SLOT_MIN windows.
+    // We expand each requested slot into the set of SLOT_MIN windows it occupies, then
+    // load every existing booking in the calendar window for those dates and expand THOSE
+    // to their own occupied windows, and check for any overlap.
+    const newDurationMin = (() => {
+      if (resolvedLessonTypeId == null) return SLOT_MIN;
+      const lt = storage.getLessonTypeById(tenantId, resolvedLessonTypeId);
+      return lt?.durationMin ?? SLOT_MIN;
+    })();
+    const newOccupied = new Set<string>();
+    const isoFromMs = (ms: number) => {
+      const d = new Date(ms);
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    };
+    for (const s of slots) {
+      const startMs = new Date(s + ":00").getTime();
+      const n = Math.max(1, Math.ceil(newDurationMin / SLOT_MIN));
+      for (let i = 0; i < n; i++) newOccupied.add(isoFromMs(startMs + i * SLOT_MIN * 60_000));
+    }
+    // Pull every booking on any affected date and expand their occupied windows.
+    // Capacity-aware collision: for SAME-TYPE GROUP bookings, the slot is only
+    // taken if cumulative occupants + new participants would exceed capacity.
+    // For solo lessons or any other lesson type holding the slot, ANY overlap
+    // blocks the booking.
+    const affectedDates = Array.from(new Set(slots.map(s => isoDate(s))));
+    const rangeStart = affectedDates.reduce((a, b) => a < b ? a : b);
+    const rangeEnd = affectedDates.reduce((a, b) => a > b ? a : b);
+    const existingBookings = storage.getBookingsInRange(tenantId, rangeStart + "T00:00", rangeEnd + "T23:59");
+    const lessonTypeDurationsCheck = new Map<number, number>();
+    for (const lt of storage.listLessonTypes(tenantId)) lessonTypeDurationsCheck.set(lt.id, lt.durationMin);
+    // Per-slot tally of same-type group occupants already present.
+    const sameTypeOccupantsAt = new Map<string, number>();
+    const blockedByOther = new Set<string>();
+    for (const b of existingBookings) {
+      const bDur = b.lessonTypeId != null ? (lessonTypeDurationsCheck.get(b.lessonTypeId) ?? SLOT_MIN) : SLOT_MIN;
+      const bStartMs = new Date(b.start + ":00").getTime();
+      const bN = Math.max(1, Math.ceil(bDur / SLOT_MIN));
+      const bPtCount = countParticipantsOnBooking(tenantId, b);
+      for (let i = 0; i < bN; i++) {
+        const slot = isoFromMs(bStartMs + i * SLOT_MIN * 60_000);
+        if (!newOccupied.has(slot)) continue;
+        // Same-type group booking: pool occupants for capacity check.
+        if (
+          resolvedLessonTypeId != null &&
+          resolvedIsGroup &&
+          b.lessonTypeId === resolvedLessonTypeId
+        ) {
+          sameTypeOccupantsAt.set(slot, (sameTypeOccupantsAt.get(slot) ?? 0) + bPtCount);
+        } else {
+          // Different lesson type, solo lesson, or untyped booking → hard block.
+          blockedByOther.add(slot);
+        }
+      }
+    }
+    const conflicts: string[] = [];
+    for (const slot of Array.from(newOccupied)) {
+      if (blockedByOther.has(slot)) {
+        conflicts.push(slot);
+        continue;
+      }
+      const occ = sameTypeOccupantsAt.get(slot) ?? 0;
+      if (occ + totalParticipants > lessonCapacity) {
+        conflicts.push(slot);
+      }
+    }
+    if (conflicts.length) {
+      // Pick a user-friendly error: if any slot was filled by a same-type group
+      // hitting capacity, message accordingly; otherwise generic taken message.
+      const capacityConflict = conflicts.some(s => !blockedByOther.has(s));
       return res.status(409).json({
-        error: "Some times were just taken. Please refresh and choose again.",
-        takenSlots: existing.map(b => b.start),
+        error: capacityConflict
+          ? `Not enough spots left in this group lesson. Please pick another time.`
+          : "Some times were just taken. Please refresh and choose again.",
+        takenSlots: conflicts,
       });
     }
     const bookingGroup = randomUUID();
@@ -806,7 +1077,123 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }).catch(e => console.error("parent cancel email error:", e));
     }
 
+    // Notify waitlist (Phase 2): when a booking that holds a group slot is
+    // cancelled, email everyone on the waitlist for the exact (start,
+    // lessonTypeId) pair. They race to claim. We mark them notified so we
+    // don't re-spam them if they ignore the email and the next booking is
+    // cancelled too. The coach can manually clear stale waitlist entries.
+    if (b.lessonTypeId != null) {
+      try {
+        const waiters = sqlite.prepare(
+          `SELECT id, parent_name, player_name, email, phone
+             FROM waitlist
+            WHERE tenant_id = ? AND start = ? AND lesson_type_id = ?
+              AND notified_at IS NULL`
+        ).all(tenantId, b.start, b.lessonTypeId) as Array<{
+          id: number; parent_name: string; player_name: string; email: string; phone: string;
+        }>;
+        if (waiters.length) {
+          const lt = storage.getLessonTypeById(tenantId, b.lessonTypeId);
+          const ltName = lt?.name || "group lesson";
+          const bookingUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") +
+            `/#/?prefillLessonType=${b.lessonTypeId}&prefillStart=${encodeURIComponent(b.start)}`;
+          const now = Date.now();
+          for (const w of waiters) {
+            if (w.email) {
+              sendEmail({
+                to: w.email,
+                subject: `A spot opened up: ${ltName} on ${dateLong} at ${timeStr}`,
+                text: `Hi ${w.parent_name},\n\nA spot just opened up for the ${ltName} on ${dateLong} at ${timeStr}. First come, first served — grab it here:\n\n${bookingUrl}\n\nIf you no longer want this slot, you can ignore this email; we'll remove you from the waitlist automatically next time the slot fills again.\n\n— ${coachName}`,
+                html: `<!doctype html><html><body style="margin:0;padding:0;background:#f4f6f4;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f1a14;"><div style="max-width:560px;margin:0 auto;padding:24px 16px;"><div style="background:#ffffff;border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,0.06);"><div style="font-size:20px;font-weight:600;margin-bottom:12px;color:#1f5a37;">${coachName} · Spot opened up</div><p style="font-size:16px;margin:0 0 12px 0;">Hi <b>${w.parent_name}</b>, a spot just opened for the <b>${ltName}</b>.</p><div style="background:#f0f8f4;border-left:4px solid #1f5a37;padding:12px 16px;border-radius:6px;margin:12px 0;"><div style="font-weight:600;font-size:14px;margin-bottom:4px;">When</div><div style="font-size:15px;line-height:1.5;">${dateLong} at ${timeStr}</div></div><p style="font-size:14px;margin:8px 0;">First come, first served — click below to claim your spot.</p><div style="text-align:center;margin:24px 0;"><a href="${bookingUrl}" style="display:inline-block;background:#1f5a37;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:16px;">Grab the spot</a></div></div></div></body></html>`,
+              }).catch(e => console.error("waitlist notify email error:", e));
+            }
+            sqlite.prepare(`UPDATE waitlist SET notified_at = ? WHERE id = ?`).run(now, w.id);
+          }
+        }
+      } catch (e) {
+        console.error("waitlist notify failure:", e);
+      }
+    }
+
     res.json({ ok: true });
+  });
+
+  // ---- Waitlist (Phase 2) ---------------------------------------------
+  // Customers join a waitlist when a group slot is full. They get emailed
+  // when a spot frees up for the same (start, lessonTypeId). The list is
+  // visible to admins for management.
+
+  // POST /api/waitlist — add an entry
+  app.post("/api/waitlist", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    if ((getSetting("waitlistEnabled") || "1") !== "1") {
+      return res.status(400).json({ error: "Waitlist is not enabled for this site." });
+    }
+    const parsed = insertWaitlistSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const d = parsed.data;
+    // Sanity: lesson type must exist and be a group lesson on this tenant.
+    const lt = storage.getLessonTypeById(tenantId, d.lessonTypeId);
+    if (!lt) return res.status(400).json({ error: "Invalid lesson type for this site." });
+    if (((lt as any).isGroup ?? 0) !== 1) {
+      return res.status(400).json({ error: "Waitlist is only available for group lessons." });
+    }
+    // De-dupe on (tenant, start, lessonType, phone) so a parent doesn't
+    // accidentally sign up twice.
+    const existing = sqlite.prepare(
+      `SELECT id FROM waitlist WHERE tenant_id = ? AND start = ? AND lesson_type_id = ? AND phone = ?`
+    ).get(tenantId, d.start, d.lessonTypeId, normalizePhone(d.phone)) as { id: number } | undefined;
+    if (existing) {
+      return res.status(200).json({ ok: true, id: existing.id, dedup: true });
+    }
+    const info = sqlite.prepare(
+      `INSERT INTO waitlist
+         (tenant_id, start, lesson_type_id, parent_name, player_name, phone, email, notes, participants_count, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      tenantId, d.start, d.lessonTypeId,
+      d.parentName, d.playerName, normalizePhone(d.phone),
+      d.email, d.notes, d.participantsCount, Date.now(),
+    );
+    res.json({ ok: true, id: Number(info.lastInsertRowid) });
+  });
+
+  // DELETE /api/waitlist/:id — remove (customer or admin)
+  app.delete("/api/waitlist/:id", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id)) return res.status(400).json({ error: "invalid id" });
+    const info = sqlite.prepare(
+      `DELETE FROM waitlist WHERE id = ? AND tenant_id = ?`
+    ).run(id, tenantId);
+    if (info.changes === 0) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true });
+  });
+
+  // GET /api/waitlist?start=&lessonTypeId= — admins see full list, customers
+  // can check their own entry by phone via ?phone=
+  app.get("/api/waitlist", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const isAdmin = isAdminReq(req);
+    const phone = req.query.phone ? normalizePhone(String(req.query.phone)) : "";
+    const start = req.query.start ? String(req.query.start) : "";
+    const ltId = req.query.lessonTypeId ? Number(req.query.lessonTypeId) : null;
+    if (!isAdmin && !phone) {
+      return res.status(400).json({ error: "phone required for customer lookup" });
+    }
+    let sql = `SELECT id, tenant_id AS tenantId, start, lesson_type_id AS lessonTypeId,
+                      parent_name AS parentName, player_name AS playerName,
+                      phone, email, notes, participants_count AS participantsCount,
+                      notified_at AS notifiedAt, created_at AS createdAt
+                 FROM waitlist
+                WHERE tenant_id = ?`;
+    const params: (string | number)[] = [tenantId];
+    if (phone) { sql += ` AND phone = ?`; params.push(phone); }
+    if (start) { sql += ` AND start = ?`; params.push(start); }
+    if (ltId != null && Number.isFinite(ltId)) { sql += ` AND lesson_type_id = ?`; params.push(ltId); }
+    sql += ` ORDER BY start ASC, created_at ASC`;
+    const rows = sqlite.prepare(sql).all(...params);
+    res.json({ entries: rows });
   });
 
   // Reschedule single booking

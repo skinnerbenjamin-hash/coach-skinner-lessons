@@ -53,6 +53,9 @@ export const lessonTypes = sqliteTable("lesson_types", {
   name: text("name").notNull(),
   durationMin: integer("duration_min").notNull(),
   capacity: integer("capacity").notNull().default(1),
+  // 1 = group lesson (capacity > 1 implied), 0 = solo/1-on-1 lesson.
+  // Used together with availability.mode to gate which slots a customer sees.
+  isGroup: integer("is_group").notNull().default(0),
   active: integer("active").notNull().default(1),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: integer("created_at").notNull(),
@@ -73,6 +76,11 @@ export const availability = sqliteTable("availability", {
   dayOfWeek: integer("day_of_week").notNull(),
   startTime: text("start_time").notNull(),
   endTime: text("end_time").notNull(),
+  // Which lesson types may be booked in this window.
+  //   "both"  (default, legacy behavior): solo OR group OK
+  //   "solo": only lesson types with is_group = 0
+  //   "group": only lesson types with is_group = 1
+  mode: text("mode").notNull().default("both"),
 });
 // API insert schemas omit tenantId — it's resolved server-side from the
 // request Host header (tenant middleware) and injected by the storage layer.
@@ -125,6 +133,8 @@ export const dateOverrides = sqliteTable("date_overrides", {
   type: text("type").notNull(),
   startTime: text("start_time"),
   endTime: text("end_time"),
+  // Same semantics as availability.mode. Only meaningful when type = "extra".
+  mode: text("mode").notNull().default("both"),
 });
 export const insertDateOverrideSchema = createInsertSchema(dateOverrides).omit({ id: true, tenantId: true });
 export type InsertDateOverride = z.infer<typeof insertDateOverrideSchema>;
@@ -325,6 +335,37 @@ export const checkoutSchema = z.object({
   participants: z.array(checkoutParticipantSchema).default([]),
 });
 export type CheckoutPayload = z.infer<typeof checkoutSchema>;
+
+// ---- Waitlist (Phase 2) ----------------------------------------------
+// A customer who wanted a full group slot, opted into the waitlist, and will
+// be emailed if the slot frees up. Shape mirrors a booking just enough to
+// later convert directly into a real booking if they claim the spot.
+export type WaitlistEntry = {
+  id: number;
+  tenantId: number;
+  start: string;
+  lessonTypeId: number;
+  parentName: string;
+  playerName: string;
+  phone: string;
+  email: string;
+  notes: string;
+  participantsCount: number;
+  notifiedAt: number | null;
+  createdAt: number;
+};
+
+export const insertWaitlistSchema = z.object({
+  start: z.string().min(10),
+  lessonTypeId: z.number().int().positive(),
+  parentName: z.string().min(1),
+  playerName: z.string().min(1),
+  phone: z.string().min(7),
+  email: z.string().email(),
+  notes: z.string().default(""),
+  participantsCount: z.number().int().min(1).max(8).default(1),
+});
+export type InsertWaitlist = z.infer<typeof insertWaitlistSchema>;
 
 // Booking with profile expanded — handy shape for the client.
 export type BookingWithProfile = Booking & {

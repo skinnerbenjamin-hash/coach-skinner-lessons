@@ -20,6 +20,7 @@ const DEFAULTS: Record<string, string> = {
   twilioFromPhone: "",              // your Twilio number, format +15551234567
   reminderChannel: "email",         // 'email' | 'sms' | 'both'
   publicSiteUrl: "https://www.perplexity.ai/computer/a/coach-skinner-lessons-hVQD3RSwQtCJc1Ye9XaAZg", // base URL parents can visit to manage appointments
+  waitlistEnabled: "1",            // Phase 2: '1' shows 'Join waitlist' on full slots, '0' hides it
 };
 
 export function getSetting(key: string): string {
