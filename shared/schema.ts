@@ -7,15 +7,35 @@ import { z } from "zod";
 // =========================================================================
 // A tenant is one coach/business on LessonSpot. Identified by:
 //   - slug: subdomain on lessonspot.app (e.g. "skinner" -> skinner.lessonspot.app)
-//   - customDomain (optional): vanity domain (e.g. book.skinnersoftball.com)
+//   - customDomain (optional, paid upsell): vanity domain like book.theirsite.com
 // Every row in every other table belongs to exactly one tenant via tenantId.
+//
+// Branding fields drive the public booking page look-and-feel. The migration
+// runner backfills sensible defaults for tenant 1 (Coach Skinner) from the
+// existing settings + UI so the live site looks identical after upgrade.
 export const tenants = sqliteTable("tenants", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   slug: text("slug").notNull().unique(),
-  name: text("name").notNull(),
-  customDomain: text("custom_domain"), // nullable; unique when set
+  name: text("name").notNull(),                                  // business name
+  customDomain: text("custom_domain"),                           // nullable; unique when set
   timezone: text("timezone").notNull().default("America/Indiana/Indianapolis"),
-  active: integer("active").notNull().default(1), // 1 = enabled, 0 = disabled
+  active: integer("active").notNull().default(1),                // 1 = enabled, 0 = disabled
+  // ---- Branding ----
+  sport: text("sport").notNull().default("softball"),             // softball|baseball|piano|guitar|tennis|golf|tutoring|fitness|martial_arts|other
+  primaryColor: text("primary_color").notNull().default("#0ea5e9"), // hex; drives CSS var --primary
+  logoPath: text("logo_path").notNull().default(""),              // /uploads/branding/<file>; falls back to text mark when empty
+  heroPath: text("hero_path").notNull().default(""),              // /uploads/branding/<file>; big image at top of booking page
+  tagline: text("tagline").notNull().default(""),                 // short pitch under the title
+  about: text("about").notNull().default(""),                     // longer paragraph on the site
+  contactPhone: text("contact_phone").notNull().default(""),      // public "Text Coach" number
+  contactEmail: text("contact_email").notNull().default(""),      // public email; used for replies
+  contactLocation: text("contact_location").notNull().default(""),// freeform "Greenwood, IN" etc.
+  // ---- Label vocabulary (replaces hardcoded "parent"/"player" everywhere) ----
+  bookerLabel: text("booker_label").notNull().default("Parent"),   // "Parent" | "Client" | "Student" | "Member"
+  attendeeLabel: text("attendee_label").notNull().default("Player"), // "Player" | "Student" | "Member" | "" (empty hides field)
+  // ---- Plan / billing (stubbed for phase 1; wired in payments milestone) ----
+  plan: text("plan").notNull().default("trial"),                  // trial | monthly | annual | inactive
+  trialEndsAt: integer("trial_ends_at"),                          // epoch ms; nullable
   createdAt: integer("created_at").notNull(),
 });
 export const insertTenantSchema = createInsertSchema(tenants).omit({ id: true, createdAt: true });
@@ -157,6 +177,111 @@ export const insertResourceSchema = createInsertSchema(resources).omit({ id: tru
 export type InsertResource = z.infer<typeof insertResourceSchema>;
 export type Resource = typeof resources.$inferSelect;
 
+// Per-tenant resource categories. Each tenant gets a starter set seeded based
+// on their sport at signup (e.g. softball -> hitting/pitching/fielding/...).
+// Coaches can add, rename, reorder, or delete categories freely.
+//
+// The legacy RESOURCE_CATEGORIES const (below) is kept as a back-compat shim
+// during the multi-tenant migration. Once the routes are refactored to load
+// categories from the database, the const can be removed.
+export const resourceCategories = sqliteTable("resource_categories", {
+  id: integer("id").primaryKey({ autoIncrement: true }),
+  tenantId: integer("tenant_id").notNull(),
+  slug: text("slug").notNull(),    // url-friendly id e.g. "hitting"
+  label: text("label").notNull(),  // display label e.g. "Hitting"
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+});
+export const insertResourceCategorySchema = createInsertSchema(resourceCategories).omit({ id: true, createdAt: true });
+export type InsertResourceCategory = z.infer<typeof insertResourceCategorySchema>;
+export type ResourceCategory = typeof resourceCategories.$inferSelect;
+
+// Default category presets by sport, used when seeding a new tenant.
+// 'general' is always last and always included as a catch-all.
+export const SPORT_CATEGORY_PRESETS: Record<string, { slug: string; label: string }[]> = {
+  softball: [
+    { slug: "hitting", label: "Hitting" },
+    { slug: "pitching", label: "Pitching" },
+    { slug: "fielding", label: "Fielding" },
+    { slug: "catching", label: "Catching" },
+    { slug: "baserunning", label: "Baserunning" },
+    { slug: "strength", label: "Strength & conditioning" },
+    { slug: "mental", label: "Mental game" },
+    { slug: "general", label: "General" },
+  ],
+  baseball: [
+    { slug: "hitting", label: "Hitting" },
+    { slug: "pitching", label: "Pitching" },
+    { slug: "fielding", label: "Fielding" },
+    { slug: "catching", label: "Catching" },
+    { slug: "baserunning", label: "Baserunning" },
+    { slug: "strength", label: "Strength & conditioning" },
+    { slug: "mental", label: "Mental game" },
+    { slug: "general", label: "General" },
+  ],
+  piano: [
+    { slug: "technique", label: "Technique" },
+    { slug: "theory", label: "Theory" },
+    { slug: "sight-reading", label: "Sight reading" },
+    { slug: "repertoire", label: "Repertoire" },
+    { slug: "ear-training", label: "Ear training" },
+    { slug: "general", label: "General" },
+  ],
+  guitar: [
+    { slug: "technique", label: "Technique" },
+    { slug: "theory", label: "Theory" },
+    { slug: "chords", label: "Chords" },
+    { slug: "scales", label: "Scales" },
+    { slug: "songs", label: "Songs" },
+    { slug: "general", label: "General" },
+  ],
+  tennis: [
+    { slug: "forehand", label: "Forehand" },
+    { slug: "backhand", label: "Backhand" },
+    { slug: "serve", label: "Serve" },
+    { slug: "volley", label: "Volley" },
+    { slug: "footwork", label: "Footwork" },
+    { slug: "general", label: "General" },
+  ],
+  golf: [
+    { slug: "driver", label: "Driver" },
+    { slug: "irons", label: "Irons" },
+    { slug: "short-game", label: "Short game" },
+    { slug: "putting", label: "Putting" },
+    { slug: "course-management", label: "Course management" },
+    { slug: "general", label: "General" },
+  ],
+  tutoring: [
+    { slug: "math", label: "Math" },
+    { slug: "reading", label: "Reading" },
+    { slug: "writing", label: "Writing" },
+    { slug: "science", label: "Science" },
+    { slug: "test-prep", label: "Test prep" },
+    { slug: "general", label: "General" },
+  ],
+  fitness: [
+    { slug: "strength", label: "Strength" },
+    { slug: "cardio", label: "Cardio" },
+    { slug: "mobility", label: "Mobility" },
+    { slug: "nutrition", label: "Nutrition" },
+    { slug: "recovery", label: "Recovery" },
+    { slug: "general", label: "General" },
+  ],
+  martial_arts: [
+    { slug: "forms", label: "Forms" },
+    { slug: "sparring", label: "Sparring" },
+    { slug: "technique", label: "Technique" },
+    { slug: "conditioning", label: "Conditioning" },
+    { slug: "general", label: "General" },
+  ],
+  other: [
+    { slug: "general", label: "General" },
+  ],
+};
+
+// Legacy back-compat: hardcoded softball categories. Used by routes that
+// haven't been refactored yet to read from the resource_categories table.
+// Will be removed after the route refactor milestone.
 export const RESOURCE_CATEGORIES = [
   { id: "hitting", label: "Hitting" },
   { id: "pitching", label: "Pitching" },
@@ -167,7 +292,7 @@ export const RESOURCE_CATEGORIES = [
   { id: "mental", label: "Mental game" },
   { id: "general", label: "General" },
 ] as const;
-export type ResourceCategory = typeof RESOURCE_CATEGORIES[number]["id"];
+export type LegacyResourceCategoryId = typeof RESOURCE_CATEGORIES[number]["id"];
 
 // Helper to normalize a phone number to digits only (so "(317) 555-1234" == "3175551234").
 export function normalizePhone(p: string) { return (p || "").replace(/\D+/g, ""); }

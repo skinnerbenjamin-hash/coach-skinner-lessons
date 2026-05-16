@@ -61,6 +61,19 @@ export function runMigrations(sqlite: DB) {
       custom_domain TEXT,
       timezone TEXT NOT NULL DEFAULT 'America/Indiana/Indianapolis',
       active INTEGER NOT NULL DEFAULT 1,
+      sport TEXT NOT NULL DEFAULT 'softball',
+      primary_color TEXT NOT NULL DEFAULT '#0ea5e9',
+      logo_path TEXT NOT NULL DEFAULT '',
+      hero_path TEXT NOT NULL DEFAULT '',
+      tagline TEXT NOT NULL DEFAULT '',
+      about TEXT NOT NULL DEFAULT '',
+      contact_phone TEXT NOT NULL DEFAULT '',
+      contact_email TEXT NOT NULL DEFAULT '',
+      contact_location TEXT NOT NULL DEFAULT '',
+      booker_label TEXT NOT NULL DEFAULT 'Parent',
+      attendee_label TEXT NOT NULL DEFAULT 'Player',
+      plan TEXT NOT NULL DEFAULT 'trial',
+      trial_ends_at INTEGER,
       created_at INTEGER NOT NULL
     );
     CREATE UNIQUE INDEX IF NOT EXISTS tenants_custom_domain_unique
@@ -89,18 +102,102 @@ export function runMigrations(sqlite: DB) {
       ON booking_participants(booking_group);
     CREATE INDEX IF NOT EXISTS booking_participants_profile_idx
       ON booking_participants(profile_id);
+
+    CREATE TABLE IF NOT EXISTS resource_categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      slug TEXT NOT NULL,
+      label TEXT NOT NULL,
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS resource_categories_tenant_idx
+      ON resource_categories(tenant_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS resource_categories_tenant_slug_unique
+      ON resource_categories(tenant_id, slug);
   `);
 
+  // ---- 1a. Backfill branding columns on existing tenants tables --------
+  // For DBs that were upgraded from the previous migration (tenants table
+  // existed without branding columns), add the missing columns now.
+  const tenantBrandingCols: { col: string; def: string }[] = [
+    { col: "sport", def: "TEXT NOT NULL DEFAULT 'softball'" },
+    { col: "primary_color", def: "TEXT NOT NULL DEFAULT '#0ea5e9'" },
+    { col: "logo_path", def: "TEXT NOT NULL DEFAULT ''" },
+    { col: "hero_path", def: "TEXT NOT NULL DEFAULT ''" },
+    { col: "tagline", def: "TEXT NOT NULL DEFAULT ''" },
+    { col: "about", def: "TEXT NOT NULL DEFAULT ''" },
+    { col: "contact_phone", def: "TEXT NOT NULL DEFAULT ''" },
+    { col: "contact_email", def: "TEXT NOT NULL DEFAULT ''" },
+    { col: "contact_location", def: "TEXT NOT NULL DEFAULT ''" },
+    { col: "booker_label", def: "TEXT NOT NULL DEFAULT 'Parent'" },
+    { col: "attendee_label", def: "TEXT NOT NULL DEFAULT 'Player'" },
+    { col: "plan", def: "TEXT NOT NULL DEFAULT 'trial'" },
+    { col: "trial_ends_at", def: "INTEGER" },
+  ];
+  for (const { col, def } of tenantBrandingCols) {
+    if (!columnExists(sqlite, "tenants", col)) {
+      sqlite.exec(`ALTER TABLE tenants ADD COLUMN ${col} ${def}`);
+    }
+  }
+
   // ---- 2. Seed default tenant ------------------------------------------
+  // Tenant 1 is Coach Skinner. Branding fields are pre-populated with values
+  // that match the existing live site so nothing visibly changes after the
+  // upgrade. The coach can customize them later from the admin Branding page.
   const tenantCount = (sqlite.prepare(`SELECT COUNT(*) AS n FROM tenants`).get() as { n: number }).n;
   if (tenantCount === 0) {
     sqlite
       .prepare(
-        `INSERT INTO tenants (id, slug, name, custom_domain, timezone, active, created_at)
-         VALUES (1, 'skinner', 'Coach Skinner', 'book.skinnersoftball.com',
-                 'America/Indiana/Indianapolis', 1, ?)`
+        `INSERT INTO tenants (
+           id, slug, name, custom_domain, timezone, active,
+           sport, primary_color, logo_path, hero_path,
+           tagline, about,
+           contact_phone, contact_email, contact_location,
+           booker_label, attendee_label,
+           plan, trial_ends_at, created_at
+         ) VALUES (
+           1, 'skinner', 'Coach Skinner', 'book.skinnersoftball.com',
+           'America/Indiana/Indianapolis', 1,
+           'softball', '#0ea5e9', '', '',
+           'Private softball lessons with Coach Skinner',
+           '',
+           '9079527860', 'skinnerbenjamin@yahoo.com', 'Greenwood, IN',
+           'Parent', 'Player',
+           'monthly', NULL, ?
+         )`
       )
       .run(Date.now());
+  } else {
+    // Tenant already exists from a prior migration run — backfill branding
+    // fields if any were left empty/default after the column-add step.
+    const t = sqlite
+      .prepare(`SELECT id, sport, primary_color, tagline, contact_phone, contact_email, contact_location, booker_label, attendee_label FROM tenants WHERE id = 1`)
+      .get() as any;
+    if (t) {
+      const updates: string[] = [];
+      const args: any[] = [];
+      if (!t.tagline) {
+        updates.push("tagline = ?");
+        args.push("Private softball lessons with Coach Skinner");
+      }
+      if (!t.contact_phone) {
+        updates.push("contact_phone = ?");
+        args.push("9079527860");
+      }
+      if (!t.contact_email) {
+        updates.push("contact_email = ?");
+        args.push("skinnerbenjamin@yahoo.com");
+      }
+      if (!t.contact_location) {
+        updates.push("contact_location = ?");
+        args.push("Greenwood, IN");
+      }
+      if (updates.length) {
+        args.push(1);
+        sqlite.prepare(`UPDATE tenants SET ${updates.join(", ")} WHERE id = ?`).run(...args);
+      }
+    }
   }
 
   // ---- 3. Add tenant_id to every legacy table --------------------------
@@ -140,6 +237,32 @@ export function runMigrations(sqlite: DB) {
     );
     insert.run("30 Min Lesson", 30, 1, 0, now);
     insert.run("1 Hour Lesson", 60, 1, 1, now);
+  }
+
+  // ---- 5a. Seed default resource categories for tenant 1 ---------------
+  // Use the softball preset; matches the legacy hardcoded list exactly.
+  const rcCount = (
+    sqlite
+      .prepare(`SELECT COUNT(*) AS n FROM resource_categories WHERE tenant_id = 1`)
+      .get() as { n: number }
+  ).n;
+  if (rcCount === 0) {
+    const presets = [
+      { slug: "hitting", label: "Hitting" },
+      { slug: "pitching", label: "Pitching" },
+      { slug: "fielding", label: "Fielding" },
+      { slug: "catching", label: "Catching" },
+      { slug: "baserunning", label: "Baserunning" },
+      { slug: "strength", label: "Strength & conditioning" },
+      { slug: "mental", label: "Mental game" },
+      { slug: "general", label: "General" },
+    ];
+    const now = Date.now();
+    const insertRc = sqlite.prepare(
+      `INSERT INTO resource_categories (tenant_id, slug, label, sort_order, created_at)
+       VALUES (1, ?, ?, ?, ?)`
+    );
+    presets.forEach((p, i) => insertRc.run(p.slug, p.label, i, now));
   }
 
   // ---- 6. Backfill booking_participants from existing bookings ---------
