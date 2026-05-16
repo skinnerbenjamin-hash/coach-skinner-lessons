@@ -628,11 +628,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const coachEmail = getSetting("coachEmail");
     if (coachEmail) {
       const summary = expanded.map(b => `• ${b.start.replace("T", " ")}`).join("\n");
+      // Collect extra participants from the first booking (group bookings share participants across sessions)
+      const extras = (expanded[0]?.extraParticipants || []).map(p => `${p.playerName}${p.parentName && p.parentName !== profile.parentName ? ` (parent: ${p.parentName})` : ""}`);
+      const allPlayers = [profile.playerName, ...extras];
+      const groupSize = allPlayers.length;
+      const playerListText = groupSize > 1
+        ? `Players (${groupSize}):\n${allPlayers.map(n => `  - ${n}`).join("\n")}`
+        : `Player: ${profile.playerName}`;
+      const playerListHtml = groupSize > 1
+        ? `<li><b>Players (${groupSize}):</b><ul>${allPlayers.map(n => `<li>${n}</li>`).join("")}</ul></li>`
+        : `<li><b>Player:</b> ${profile.playerName}</li>`;
+      const subjectSuffix = groupSize > 1 ? ` +${groupSize - 1} others` : "";
       sendBookingEmail({
         to: coachEmail,
-        subject: `New booking: ${profile.playerName} (${expanded.length} session${expanded.length === 1 ? "" : "s"})`,
-        text: `New softball lesson booking.\n\nPlayer: ${profile.playerName}\nParent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\nNotes: ${profile.notes || "(none)"}\n\nSessions:\n${summary}\n\nThe attached .ics file will add these to your Apple Calendar.`,
-        html: `<p>New softball lesson booking.</p><ul><li><b>Player:</b> ${profile.playerName}</li><li><b>Parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li><li><b>Notes:</b> ${profile.notes || "(none)"}</li></ul><p><b>Sessions:</b></p><pre>${summary}</pre><p>The attached .ics file will add these to your Apple Calendar.</p>`,
+        subject: `New booking: ${profile.playerName}${subjectSuffix} (${expanded.length} session${expanded.length === 1 ? "" : "s"})`,
+        text: `New softball lesson booking.\n\n${playerListText}\nBooking parent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\nNotes: ${profile.notes || "(none)"}\n\nSessions:\n${summary}\n\nThe attached .ics file will add these to your Apple Calendar.`,
+        html: `<p>New softball lesson booking.</p><ul>${playerListHtml}<li><b>Booking parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li><li><b>Notes:</b> ${profile.notes || "(none)"}</li></ul><p><b>Sessions:</b></p><pre>${summary}</pre><p>The attached .ics file will add these to your Apple Calendar.</p>`,
         icsContent: ics,
         icsFilename: `booking-${bookingGroup.slice(0, 8)}.ics`,
       }).catch(e => console.error("coach email send error:", e));
