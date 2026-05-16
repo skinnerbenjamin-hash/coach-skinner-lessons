@@ -88,6 +88,24 @@ const noteUpload = multer({
     else cb(new Error("Only image or video uploads are allowed."));
   },
 });
+// Branding uploads (logo, hero image).  Smaller cap; images only.
+const BRANDING_DIR = path.join(UPLOAD_DIR, "branding");
+try { fs.mkdirSync(BRANDING_DIR, { recursive: true }); } catch {}
+const brandingUpload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, BRANDING_DIR),
+    filename: (_req, file, cb) => {
+      const ext = path.extname(file.originalname || "").toLowerCase().replace(/[^.a-z0-9]/g, "") || ".bin";
+      const safe = Math.random().toString(36).slice(2) + "-" + Date.now() + ext;
+      cb(null, safe);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB cap is plenty for logos/heroes
+  fileFilter: (_req, file, cb) => {
+    if (/^image\//.test(file.mimetype)) cb(null, true);
+    else cb(new Error("Only image uploads are allowed."));
+  },
+});
 function isAdminReq(req: Request): boolean { return isAuthed(req); }
 function matchesProofEmail(profileEmail: string, proof: string): boolean {
   const a = (profileEmail || "").trim().toLowerCase();
@@ -808,6 +826,90 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Settings (admin)
+  // --- Tenant branding (per-tenant settings) ---
+  // GET returns the current tenant's full branding row.
+  app.get("/api/admin/branding", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res);
+    if (tenantId === null) return;
+    const t = getTenantById(sqlite, tenantId);
+    if (!t) return res.status(404).json({ error: "Tenant not found" });
+    res.json({
+      id: t.id,
+      slug: t.slug,
+      name: t.name,
+      sport: t.sport,
+      primaryColor: t.primary_color,
+      logoPath: t.logo_path,
+      heroPath: t.hero_path,
+      tagline: t.tagline,
+      about: t.about,
+      contactPhone: t.contact_phone,
+      contactEmail: t.contact_email,
+      contactLocation: t.contact_location,
+      bookerLabel: t.booker_label,
+      attendeeLabel: t.attendee_label,
+      plan: t.plan,
+      trialEndsAt: t.trial_ends_at,
+    });
+  });
+  // PATCH updates the current tenant's branding.  Only whitelisted fields are
+  // accepted so a malicious client can't set tenant_id, slug, plan, etc.
+  app.patch("/api/admin/branding", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res);
+    if (tenantId === null) return;
+    const body = req.body || {};
+    const fieldMap: Record<string, string> = {
+      name: "name",
+      sport: "sport",
+      primaryColor: "primary_color",
+      logoPath: "logo_path",
+      heroPath: "hero_path",
+      tagline: "tagline",
+      about: "about",
+      contactPhone: "contact_phone",
+      contactEmail: "contact_email",
+      contactLocation: "contact_location",
+      bookerLabel: "booker_label",
+      attendeeLabel: "attendee_label",
+    };
+    const sets: string[] = [];
+    const vals: any[] = [];
+    for (const [bodyKey, dbCol] of Object.entries(fieldMap)) {
+      if (typeof body[bodyKey] === "string") {
+        sets.push(`${dbCol} = ?`);
+        vals.push(body[bodyKey]);
+      }
+    }
+    if (sets.length === 0) return res.json({ ok: true, updated: 0 });
+    vals.push(tenantId);
+    sqlite.prepare(`UPDATE tenants SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
+    res.json({ ok: true, updated: sets.length });
+  });
+  // Logo upload — stores file in /uploads/branding and saves path to tenant.logo_path.
+  app.post("/api/admin/branding/logo", requireAdmin, brandingUpload.single("logo"), (req, res) => {
+    const tenantId = requireTenantId(req, res);
+    if (tenantId === null) return;
+    const file = (req as any).file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+    const path = `/uploads/branding/${file.filename}`;
+    sqlite.prepare(`UPDATE tenants SET logo_path = ? WHERE id = ?`).run(path, tenantId);
+    res.json({ ok: true, path });
+  });
+  app.post("/api/admin/branding/hero", requireAdmin, brandingUpload.single("hero"), (req, res) => {
+    const tenantId = requireTenantId(req, res);
+    if (tenantId === null) return;
+    const file = (req as any).file;
+    if (!file) return res.status(400).json({ error: "No file uploaded" });
+    const path = `/uploads/branding/${file.filename}`;
+    sqlite.prepare(`UPDATE tenants SET hero_path = ? WHERE id = ?`).run(path, tenantId);
+    res.json({ ok: true, path });
+  });
+  // Serve branding assets (logos, hero images) — public so unauthenticated visitors can render them.
+  app.use("/uploads/branding", express.static(BRANDING_DIR, {
+    fallthrough: false,
+    maxAge: "1h",
+  }));
+
   app.get("/api/settings", requireAdmin, (_req, res) => {
     const s = getAllSettings();
     // mask secrets when returning

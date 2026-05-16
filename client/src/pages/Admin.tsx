@@ -65,6 +65,7 @@ export default function Admin() {
           <TabsTrigger value="availability" data-testid="tab-availability">Availability</TabsTrigger>
           <TabsTrigger value="overrides" data-testid="tab-overrides">Blackouts</TabsTrigger>
           <TabsTrigger value="reminders" data-testid="tab-reminders">SMS reminders</TabsTrigger>
+          <TabsTrigger value="branding" data-testid="tab-branding">Branding</TabsTrigger>
           <TabsTrigger value="settings" data-testid="tab-settings">Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="bookings"><BookingsPanel /></TabsContent>
@@ -74,6 +75,7 @@ export default function Admin() {
         <TabsContent value="availability"><AvailabilityPanel /></TabsContent>
         <TabsContent value="overrides"><OverridesPanel /></TabsContent>
         <TabsContent value="reminders"><RemindersPanel /></TabsContent>
+        <TabsContent value="branding"><BrandingPanel /></TabsContent>
         <TabsContent value="settings"><SettingsPanel /></TabsContent>
       </Tabs>
     </div>
@@ -1852,6 +1854,227 @@ function AdminCoachNotes({ profileId, playerName, parentName }: { profileId: num
             <Send className="h-3.5 w-3.5 mr-2" /> {postMut.isPending ? "Sending…" : "Post note"}
           </Button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// BrandingPanel — tenant branding editor: name, sport, primary color, logo,
+// hero image, tagline, about, contact info, and labels.  Shows a live
+// preview card so the coach can see how their site will look.
+// ---------------------------------------------------------------------------
+type Branding = {
+  id: number;
+  slug: string;
+  name: string;
+  sport: string;
+  primaryColor: string;
+  logoPath: string;
+  heroPath: string;
+  tagline: string;
+  about: string;
+  contactPhone: string;
+  contactEmail: string;
+  contactLocation: string;
+  bookerLabel: string;
+  attendeeLabel: string;
+  plan: string;
+  trialEndsAt: number | null;
+};
+
+const SPORTS = [
+  "softball", "baseball", "piano", "guitar", "tennis", "golf",
+  "tutoring", "fitness", "martial_arts", "other",
+] as const;
+const BOOKER_LABEL_OPTIONS = ["Parent", "Client", "Member", "Guardian"];
+const ATTENDEE_LABEL_OPTIONS = ["Player", "Student", "Athlete", "Member", "Client"];
+
+function BrandingPanel() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const { data, isLoading } = useQuery<Branding>({
+    queryKey: ["/api/admin/branding"],
+    queryFn: async () => {
+      const r = await apiRequest("GET", "/api/admin/branding");
+      return r.json();
+    },
+  });
+  const [draft, setDraft] = useState<Partial<Branding>>({});
+  const merged: Partial<Branding> = { ...(data || {}), ...draft };
+
+  const saveMut = useMutation({
+    mutationFn: async (patch: Partial<Branding>) => {
+      const r = await apiRequest("PATCH", "/api/admin/branding", patch);
+      return r.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Branding saved" });
+      setDraft({});
+      qc.invalidateQueries({ queryKey: ["/api/admin/branding"] });
+      qc.invalidateQueries({ queryKey: ["/api/_tenant"] });
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Save failed", description: e.message }),
+  });
+
+  function set<K extends keyof Branding>(k: K, v: Branding[K]) {
+    setDraft(d => ({ ...d, [k]: v as any }));
+  }
+  function uploadImage(kind: "logo" | "hero", file: File) {
+    const fd = new FormData();
+    fd.append(kind, file);
+    fetch(`${"__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__"}/api/admin/branding/${kind}`, {
+      method: "POST",
+      body: fd,
+      credentials: "include",
+    })
+      .then(r => r.json())
+      .then(json => {
+        if (json.path) {
+          set(kind === "logo" ? "logoPath" : "heroPath", json.path);
+          toast({ title: `${kind === "logo" ? "Logo" : "Hero image"} uploaded` });
+          qc.invalidateQueries({ queryKey: ["/api/admin/branding"] });
+          qc.invalidateQueries({ queryKey: ["/api/_tenant"] });
+        } else {
+          toast({ variant: "destructive", title: "Upload failed", description: json.error || "Unknown error" });
+        }
+      })
+      .catch(e => toast({ variant: "destructive", title: "Upload failed", description: e.message }));
+  }
+
+  if (isLoading || !data) return <p className="text-sm text-muted-foreground">Loading branding…</p>;
+
+  return (
+    <div className="grid lg:grid-cols-2 gap-6">
+      <Card>
+        <CardContent className="p-6 space-y-4">
+          <div>
+            <h2 className="text-base font-semibold">Site identity</h2>
+            <p className="text-xs text-muted-foreground">Your site URL is <code className="text-foreground">{data.slug}.lessonspot.app</code>.</p>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="b-name">Business name</Label>
+            <Input id="b-name" value={merged.name ?? ""} onChange={e => set("name", e.target.value)} data-testid="input-branding-name" />
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="b-sport">Sport / category</Label>
+              <select id="b-sport" className="w-full h-10 rounded-md border bg-background px-3 text-sm" value={merged.sport ?? ""} onChange={e => set("sport", e.target.value)} data-testid="select-branding-sport">
+                {SPORTS.map(s => <option key={s} value={s}>{s}</option>)}
+              </select>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="b-color">Primary color</Label>
+              <div className="flex items-center gap-2">
+                <input
+                  id="b-color"
+                  type="color"
+                  className="h-10 w-12 rounded border bg-background cursor-pointer"
+                  value={merged.primaryColor || "#0ea5e9"}
+                  onChange={e => set("primaryColor", e.target.value)}
+                  data-testid="input-branding-color"
+                />
+                <Input value={merged.primaryColor ?? ""} onChange={e => set("primaryColor", e.target.value)} className="flex-1 font-mono text-xs" />
+              </div>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="b-tagline">Tagline</Label>
+            <Input id="b-tagline" value={merged.tagline ?? ""} onChange={e => set("tagline", e.target.value)} placeholder="Private softball lessons in Greenwood, IN" data-testid="input-branding-tagline" />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="b-about">About</Label>
+            <Textarea id="b-about" rows={4} value={merged.about ?? ""} onChange={e => set("about", e.target.value)} placeholder="A short bio that appears on your booking page." data-testid="input-branding-about" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-6 space-y-4">
+          <h2 className="text-base font-semibold">Logo &amp; hero image</h2>
+          <div className="space-y-2">
+            <Label>Logo</Label>
+            <div className="flex items-center gap-3">
+              {merged.logoPath ? (
+                <img src={merged.logoPath} alt="Logo" className="h-12 w-12 object-contain border rounded" />
+              ) : (
+                <div className="h-12 w-12 border rounded flex items-center justify-center text-xs text-muted-foreground">none</div>
+              )}
+              <label className="cursor-pointer">
+                <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) uploadImage("logo", f); }} data-testid="input-upload-logo" />
+                <span className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">
+                  <Upload className="h-3.5 w-3.5" /> Upload
+                </span>
+              </label>
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label>Hero image (optional)</Label>
+            <div className="flex items-center gap-3">
+              {merged.heroPath ? (
+                <img src={merged.heroPath} alt="Hero" className="h-20 w-32 object-cover border rounded" />
+              ) : (
+                <div className="h-20 w-32 border rounded flex items-center justify-center text-xs text-muted-foreground">none</div>
+              )}
+              <label className="cursor-pointer">
+                <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) uploadImage("hero", f); }} data-testid="input-upload-hero" />
+                <span className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">
+                  <Upload className="h-3.5 w-3.5" /> Upload
+                </span>
+              </label>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-6 space-y-3">
+          <h2 className="text-base font-semibold">Public contact info</h2>
+          <p className="text-xs text-muted-foreground">Shown on booking confirmations and the "Text Coach" button.</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="b-cphone">Phone</Label>
+              <Input id="b-cphone" value={merged.contactPhone ?? ""} onChange={e => set("contactPhone", e.target.value)} data-testid="input-branding-phone" />
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="b-cemail">Email</Label>
+              <Input id="b-cemail" type="email" value={merged.contactEmail ?? ""} onChange={e => set("contactEmail", e.target.value)} data-testid="input-branding-email" />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor="b-cloc">Location</Label>
+            <Input id="b-cloc" value={merged.contactLocation ?? ""} onChange={e => set("contactLocation", e.target.value)} placeholder="Greenwood, IN" data-testid="input-branding-location" />
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-6 space-y-3">
+          <h2 className="text-base font-semibold">Audience labels</h2>
+          <p className="text-xs text-muted-foreground">What do you call the person booking, and the person attending?</p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="b-booker">Booker label</Label>
+              <Input id="b-booker" list="booker-opts" value={merged.bookerLabel ?? ""} onChange={e => set("bookerLabel", e.target.value)} data-testid="input-branding-booker" />
+              <datalist id="booker-opts">{BOOKER_LABEL_OPTIONS.map(o => <option key={o} value={o} />)}</datalist>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="b-attendee">Attendee label</Label>
+              <Input id="b-attendee" list="attendee-opts" value={merged.attendeeLabel ?? ""} onChange={e => set("attendeeLabel", e.target.value)} data-testid="input-branding-attendee" />
+              <datalist id="attendee-opts">{ATTENDEE_LABEL_OPTIONS.map(o => <option key={o} value={o} />)}</datalist>
+            </div>
+          </div>
+          <div className="text-xs text-muted-foreground italic">
+            Example: "{merged.bookerLabel || "Parent"} name" + "{merged.attendeeLabel || "Player"} name" on the booking form.
+          </div>
+        </CardContent>
+      </Card>
+
+      <div className="lg:col-span-2 flex items-center justify-end gap-2">
+        <Button variant="outline" onClick={() => setDraft({})} disabled={Object.keys(draft).length === 0} data-testid="button-branding-reset">Reset</Button>
+        <Button onClick={() => saveMut.mutate(draft)} disabled={Object.keys(draft).length === 0 || saveMut.isPending} data-testid="button-branding-save">
+          {saveMut.isPending ? "Saving…" : "Save changes"}
+        </Button>
       </div>
     </div>
   );
