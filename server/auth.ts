@@ -158,28 +158,48 @@ export function getAdminPhone(): string {
 }
 
 // --- Login / sessions ---
-export function checkLogin(phone: string, password: string): { ok: true; token: string } | { ok: false } {
+// tenantId is the host-resolved tenant; we only let an admin log in to their
+// own tenant (so a Skinner admin hitting demo.lessonspot.app cannot become an
+// admin there).  Legacy single-admin row is always tenant 1.
+export function checkLogin(phone: string, password: string, tenantId: number): { ok: true; token: string } | { ok: false } {
   const np = normalizePhone(phone);
-  // First check multi-admin table
-  const adminRow = sqlite.prepare(`SELECT * FROM admin_users WHERE phone=?`).get(np) as any;
   let verified = false;
+  let resolvedTenant: number | null = null;
+  // First check multi-admin table — must match the current tenant.
+  const adminRow = sqlite.prepare(`SELECT * FROM admin_users WHERE phone=? AND tenant_id=?`).get(np, tenantId) as any;
   if (adminRow && verifyPassword(password, adminRow.salt, adminRow.hash)) {
     verified = true;
+    resolvedTenant = adminRow.tenant_id;
   } else {
-    // Fallback to legacy single-admin table
-    const legacy = sqlite.prepare(`SELECT * FROM admin_credentials WHERE id=1`).get() as any;
-    if (legacy && np === legacy.phone && verifyPassword(password, legacy.salt, legacy.hash)) {
-      verified = true;
+    // Fallback to legacy single-admin table — only valid for tenant 1.
+    if (tenantId === 1) {
+      const legacy = sqlite.prepare(`SELECT * FROM admin_credentials WHERE id=1`).get() as any;
+      if (legacy && np === legacy.phone && verifyPassword(password, legacy.salt, legacy.hash)) {
+        verified = true;
+        resolvedTenant = 1;
+      }
     }
   }
-  if (!verified) return { ok: false };
+  if (!verified || resolvedTenant === null) return { ok: false };
   const token = randomBytes(32).toString("hex");
   const now = Date.now();
   sqlite.prepare(
-    `INSERT INTO admin_sessions (token, created_at, expires_at) VALUES (?, ?, ?)`
-  ).run(token, now, now + SESSION_TTL_MS);
+    `INSERT INTO admin_sessions (token, created_at, expires_at, tenant_id) VALUES (?, ?, ?, ?)`
+  ).run(token, now, now + SESSION_TTL_MS, resolvedTenant);
   sqlite.prepare(`DELETE FROM admin_sessions WHERE expires_at < ?`).run(now);
   return { ok: true, token };
+}
+
+// Returns the tenant_id bound to a session token, or null if invalid.
+export function getSessionTenantId(token: string): number | null {
+  if (!token) return null;
+  const row = sqlite.prepare(`SELECT expires_at, tenant_id FROM admin_sessions WHERE token=?`).get(token) as any;
+  if (!row) return null;
+  if (row.expires_at < Date.now()) {
+    sqlite.prepare(`DELETE FROM admin_sessions WHERE token=?`).run(token);
+    return null;
+  }
+  return row.tenant_id as number;
 }
 
 export function logout(token: string) {
@@ -232,14 +252,27 @@ export function clearSessionCookie(res: Response) {
 }
 
 // --- Middleware ---
+// requireAdmin now ALSO checks that the session's tenant matches the
+// host-resolved tenant.  Without this, an admin token from one tenant could
+// be used against another tenant's admin endpoints.
 export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   const token = getTokenFromReq(req);
-  if (!isValidSession(token)) {
+  const sessTenant = getSessionTenantId(token);
+  if (sessTenant === null) {
     return res.status(401).json({ error: "Unauthorized" });
+  }
+  const hostTenant = req.tenantId;
+  if (typeof hostTenant === "number" && hostTenant !== sessTenant) {
+    return res.status(403).json({ error: "Wrong tenant" });
   }
   next();
 }
 
 export function isAuthed(req: Request): boolean {
-  return isValidSession(getTokenFromReq(req));
+  const token = getTokenFromReq(req);
+  const sessTenant = getSessionTenantId(token);
+  if (sessTenant === null) return false;
+  const hostTenant = req.tenantId;
+  if (typeof hostTenant === "number" && hostTenant !== sessTenant) return false;
+  return true;
 }

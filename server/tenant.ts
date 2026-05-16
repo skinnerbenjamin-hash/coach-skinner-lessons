@@ -149,6 +149,17 @@ export function createTenantMiddleware(sqlite: Database.Database) {
 
 // Helper for route handlers that want to require a resolved tenant.  Returns
 // the tenantId or sends a 404 and returns null.
+/**
+ * Fetch full tenant row by id.  Returns null if not found.
+ * Used by routes that need branding/labels (e.g. /api/coach).
+ */
+export function getTenantById(sqlite: Database.Database, id: number): TenantRow | null {
+  const row = sqlite.prepare<[number], TenantRow>(
+    `SELECT * FROM tenants WHERE id = ? LIMIT 1`,
+  ).get(id);
+  return row ?? null;
+}
+
 export function requireTenantId(req: Request, res: Response): number | null {
   if (typeof req.tenantId === "number") return req.tenantId;
   res.status(404).json({ message: "Site not found" });

@@ -128,41 +128,76 @@ if (existing.length === 0) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// DatabaseStorage
+//
+// Every read/write below is scoped to a tenantId.  This is the security
+// boundary for multi-tenancy: a missing tenantId would silently return
+// cross-tenant data, so we make it a required parameter on every method.
+// Routes resolve tenantId from req.tenantId (set by tenant middleware) and
+// pass it in explicitly.
+// ---------------------------------------------------------------------------
 export class DatabaseStorage {
   // availability
-  getAvailability() { return db.select().from(availability).all(); }
-  setAvailability(rows: InsertAvailability[]) {
-    db.delete(availability).run();
-    if (rows.length) db.insert(availability).values(rows).run();
+  getAvailability(tenantId: number) {
+    return db.select().from(availability).where(eq(availability.tenantId, tenantId)).all();
   }
+  setAvailability(tenantId: number, rows: InsertAvailability[]) {
+    db.delete(availability).where(eq(availability.tenantId, tenantId)).run();
+    if (rows.length) {
+      db.insert(availability).values(rows.map(r => ({ ...r, tenantId }))).run();
+    }
+  }
+
   // overrides
-  getDateOverrides() { return db.select().from(dateOverrides).all(); }
-  addDateOverride(o: InsertDateOverride) { return db.insert(dateOverrides).values(o).returning().get(); }
-  deleteDateOverride(id: number) { db.delete(dateOverrides).where(eq(dateOverrides.id, id)).run(); }
+  getDateOverrides(tenantId: number) {
+    return db.select().from(dateOverrides).where(eq(dateOverrides.tenantId, tenantId)).all();
+  }
+  addDateOverride(tenantId: number, o: InsertDateOverride): DateOverride {
+    return db.insert(dateOverrides).values({ ...o, tenantId }).returning().get();
+  }
+  deleteDateOverride(tenantId: number, id: number) {
+    db.delete(dateOverrides)
+      .where(and(eq(dateOverrides.tenantId, tenantId), eq(dateOverrides.id, id)))
+      .run();
+  }
 
   // profiles
-  getProfileByPhone(phone: string): Profile | undefined {
+  getProfileByPhone(tenantId: number, phone: string): Profile | undefined {
     const p = normalizePhone(phone);
-    return db.select().from(profiles).where(eq(profiles.phone, p)).get();
+    return db.select().from(profiles)
+      .where(and(eq(profiles.tenantId, tenantId), eq(profiles.phone, p)))
+      .get();
   }
-  getProfileByEmail(email: string): Profile | undefined {
+  getProfileByEmail(tenantId: number, email: string): Profile | undefined {
     const e = email.trim().toLowerCase();
     if (!e) return undefined;
-    // case-insensitive lookup
-    const all = db.select().from(profiles).all();
+    // case-insensitive lookup, scoped to tenant
+    const all = db.select().from(profiles).where(eq(profiles.tenantId, tenantId)).all();
     return all.find(p => (p.email || "").trim().toLowerCase() === e);
   }
-  getProfileById(id: number): Profile | undefined {
-    return db.select().from(profiles).where(eq(profiles.id, id)).get();
+  getProfileById(tenantId: number, id: number): Profile | undefined {
+    return db.select().from(profiles)
+      .where(and(eq(profiles.tenantId, tenantId), eq(profiles.id, id)))
+      .get();
   }
-  getAllProfiles(): Profile[] {
-    return db.select().from(profiles).orderBy(desc(profiles.createdAt)).all();
+  getAllProfiles(tenantId: number): Profile[] {
+    return db.select().from(profiles)
+      .where(eq(profiles.tenantId, tenantId))
+      .orderBy(desc(profiles.createdAt))
+      .all();
   }
-  deleteProfile(id: number) {
-    db.delete(profiles).where(eq(profiles.id, id)).run();
+  deleteProfile(tenantId: number, id: number) {
+    db.delete(profiles)
+      .where(and(eq(profiles.tenantId, tenantId), eq(profiles.id, id)))
+      .run();
   }
-  updateProfile(id: number, patch: { email?: string; parentName?: string; playerName?: string; phone?: string; notes?: string; photoPath?: string }): Profile | undefined {
-    const existing = this.getProfileById(id);
+  updateProfile(
+    tenantId: number,
+    id: number,
+    patch: { email?: string; parentName?: string; playerName?: string; phone?: string; notes?: string; photoPath?: string },
+  ): Profile | undefined {
+    const existing = this.getProfileById(tenantId, id);
     if (!existing) return undefined;
     const fields: Record<string, string> = {};
     if (patch.email !== undefined) fields.email = patch.email;
@@ -172,37 +207,25 @@ export class DatabaseStorage {
     if (patch.notes !== undefined) fields.notes = patch.notes;
     if (patch.photoPath !== undefined) fields.photoPath = patch.photoPath;
     if (Object.keys(fields).length === 0) return existing;
-    db.update(profiles).set(fields).where(eq(profiles.id, id)).run();
-    return this.getProfileById(id);
+    db.update(profiles).set(fields)
+      .where(and(eq(profiles.tenantId, tenantId), eq(profiles.id, id)))
+      .run();
+    return this.getProfileById(tenantId, id);
   }
-
-  // Coaching notes
-  getNotesForProfile(profileId: number): CoachingNote[] {
-    return db.select().from(coachingNotes).where(eq(coachingNotes.profileId, profileId))
-      .orderBy(coachingNotes.createdAt).all();
-  }
-  addNote(input: InsertCoachingNote): CoachingNote {
-    return db.insert(coachingNotes).values({ ...input, createdAt: Date.now() }).returning().get();
-  }
-  getNoteById(id: number): CoachingNote | undefined {
-    return db.select().from(coachingNotes).where(eq(coachingNotes.id, id)).get();
-  }
-  deleteNote(id: number) {
-    db.delete(coachingNotes).where(eq(coachingNotes.id, id)).run();
-  }
-  upsertProfile(input: InsertProfile): Profile {
+  upsertProfile(tenantId: number, input: InsertProfile): Profile {
     const phone = normalizePhone(input.phone);
-    const existing = this.getProfileByPhone(phone);
+    const existing = this.getProfileByPhone(tenantId, phone);
     if (existing) {
       db.update(profiles).set({
         email: input.email ?? existing.email ?? "",
         parentName: input.parentName,
         playerName: input.playerName,
         notes: input.notes ?? existing.notes ?? "",
-      }).where(eq(profiles.id, existing.id)).run();
-      return this.getProfileById(existing.id)!;
+      }).where(and(eq(profiles.tenantId, tenantId), eq(profiles.id, existing.id))).run();
+      return this.getProfileById(tenantId, existing.id)!;
     }
     return db.insert(profiles).values({
+      tenantId,
       phone,
       email: input.email ?? "",
       parentName: input.parentName,
@@ -212,58 +235,120 @@ export class DatabaseStorage {
     }).returning().get();
   }
 
+  // Coaching notes
+  // Notes are joined via profile_id, but we still filter by tenantId for
+  // defense-in-depth so a malicious or buggy caller can't read across tenants
+  // by passing another tenant's profile id.
+  getNotesForProfile(tenantId: number, profileId: number): CoachingNote[] {
+    return db.select().from(coachingNotes)
+      .where(and(eq(coachingNotes.tenantId, tenantId), eq(coachingNotes.profileId, profileId)))
+      .orderBy(coachingNotes.createdAt)
+      .all();
+  }
+  addNote(tenantId: number, input: InsertCoachingNote): CoachingNote {
+    return db.insert(coachingNotes)
+      .values({ ...input, tenantId, createdAt: Date.now() })
+      .returning()
+      .get();
+  }
+  getNoteById(tenantId: number, id: number): CoachingNote | undefined {
+    return db.select().from(coachingNotes)
+      .where(and(eq(coachingNotes.tenantId, tenantId), eq(coachingNotes.id, id)))
+      .get();
+  }
+  deleteNote(tenantId: number, id: number) {
+    db.delete(coachingNotes)
+      .where(and(eq(coachingNotes.tenantId, tenantId), eq(coachingNotes.id, id)))
+      .run();
+  }
+
   // bookings
-  getBookings(): Booking[] { return db.select().from(bookings).all(); }
-  getBookingsInRange(startDate: string, endDate: string): Booking[] {
+  getBookings(tenantId: number): Booking[] {
+    return db.select().from(bookings).where(eq(bookings.tenantId, tenantId)).all();
+  }
+  getBookingsInRange(tenantId: number, startDate: string, endDate: string): Booking[] {
     return db.select().from(bookings)
-      .where(and(gte(bookings.start, startDate), lte(bookings.start, endDate))).all();
+      .where(and(
+        eq(bookings.tenantId, tenantId),
+        gte(bookings.start, startDate),
+        lte(bookings.start, endDate),
+      ))
+      .all();
   }
-  getBookingsByStarts(starts: string[]): Booking[] {
+  getBookingsByStarts(tenantId: number, starts: string[]): Booking[] {
     if (!starts.length) return [];
-    return db.select().from(bookings).where(inArray(bookings.start, starts)).all();
+    return db.select().from(bookings)
+      .where(and(eq(bookings.tenantId, tenantId), inArray(bookings.start, starts)))
+      .all();
   }
-  getBookingById(id: number): Booking | undefined {
-    return db.select().from(bookings).where(eq(bookings.id, id)).get();
+  getBookingById(tenantId: number, id: number): Booking | undefined {
+    return db.select().from(bookings)
+      .where(and(eq(bookings.tenantId, tenantId), eq(bookings.id, id)))
+      .get();
   }
-  getBookingsForProfile(profileId: number): Booking[] {
-    return db.select().from(bookings).where(eq(bookings.profileId, profileId)).all();
+  getBookingsForProfile(tenantId: number, profileId: number): Booking[] {
+    return db.select().from(bookings)
+      .where(and(eq(bookings.tenantId, tenantId), eq(bookings.profileId, profileId)))
+      .all();
   }
-  createBookings(rows: InsertBooking[]): Booking[] {
+  createBookings(tenantId: number, rows: InsertBooking[]): Booking[] {
     const out: Booking[] = [];
-    for (const r of rows) out.push(db.insert(bookings).values(r).returning().get());
+    for (const r of rows) {
+      out.push(db.insert(bookings).values({ ...r, tenantId }).returning().get());
+    }
     return out;
   }
-  updateBookingStart(id: number, newStart: string) {
-    db.update(bookings).set({ start: newStart }).where(eq(bookings.id, id)).run();
+  updateBookingStart(tenantId: number, id: number, newStart: string) {
+    db.update(bookings).set({ start: newStart })
+      .where(and(eq(bookings.tenantId, tenantId), eq(bookings.id, id)))
+      .run();
   }
-  deleteBooking(id: number) { db.delete(bookings).where(eq(bookings.id, id)).run(); }
-  deleteBookingGroup(groupId: string) {
-    db.delete(bookings).where(eq(bookings.bookingGroup, groupId)).run();
+  deleteBooking(tenantId: number, id: number) {
+    db.delete(bookings)
+      .where(and(eq(bookings.tenantId, tenantId), eq(bookings.id, id)))
+      .run();
+  }
+  deleteBookingGroup(tenantId: number, groupId: string) {
+    db.delete(bookings)
+      .where(and(eq(bookings.tenantId, tenantId), eq(bookings.bookingGroup, groupId)))
+      .run();
   }
 
   // resources
-  getResources(): Resource[] {
-    return db.select().from(resources).orderBy(desc(resources.createdAt)).all();
+  getResources(tenantId: number): Resource[] {
+    return db.select().from(resources)
+      .where(eq(resources.tenantId, tenantId))
+      .orderBy(desc(resources.createdAt))
+      .all();
   }
-  getResourceById(id: number): Resource | undefined {
-    return db.select().from(resources).where(eq(resources.id, id)).get();
+  getResourceById(tenantId: number, id: number): Resource | undefined {
+    return db.select().from(resources)
+      .where(and(eq(resources.tenantId, tenantId), eq(resources.id, id)))
+      .get();
   }
-  createResource(input: InsertResource): Resource {
-    return db.insert(resources).values({ ...input, createdAt: Date.now() }).returning().get();
+  createResource(tenantId: number, input: InsertResource): Resource {
+    return db.insert(resources)
+      .values({ ...input, tenantId, createdAt: Date.now() })
+      .returning()
+      .get();
   }
-  deleteResource(id: number) {
-    db.delete(resources).where(eq(resources.id, id)).run();
+  deleteResource(tenantId: number, id: number) {
+    db.delete(resources)
+      .where(and(eq(resources.tenantId, tenantId), eq(resources.id, id)))
+      .run();
   }
-  updateResource(id: number, patch: Partial<InsertResource>): Resource | undefined {
-    const existing = this.getResourceById(id);
+  updateResource(tenantId: number, id: number, patch: Partial<InsertResource>): Resource | undefined {
+    const existing = this.getResourceById(tenantId, id);
     if (!existing) return undefined;
-    db.update(resources).set(patch).where(eq(resources.id, id)).run();
-    return this.getResourceById(id);
+    db.update(resources).set(patch)
+      .where(and(eq(resources.tenantId, tenantId), eq(resources.id, id)))
+      .run();
+    return this.getResourceById(tenantId, id);
   }
 
   // expand booking with profile data
-  expandBooking(b: Booking): BookingWithProfile {
-    const p = this.getProfileById(b.profileId);
+  expandBooking(tenantId: number, b: Booking): BookingWithProfile {
+    const p = this.getProfileById(tenantId, b.profileId);
     return {
       ...b,
       parentName: p?.parentName ?? "(unknown)",

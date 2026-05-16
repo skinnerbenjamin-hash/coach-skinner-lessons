@@ -74,7 +74,9 @@ export const availability = sqliteTable("availability", {
   startTime: text("start_time").notNull(),
   endTime: text("end_time").notNull(),
 });
-export const insertAvailabilitySchema = createInsertSchema(availability).omit({ id: true });
+// API insert schemas omit tenantId — it's resolved server-side from the
+// request Host header (tenant middleware) and injected by the storage layer.
+export const insertAvailabilitySchema = createInsertSchema(availability).omit({ id: true, tenantId: true });
 export type InsertAvailability = z.infer<typeof insertAvailabilitySchema>;
 export type Availability = typeof availability.$inferSelect;
 
@@ -93,7 +95,7 @@ export const profiles = sqliteTable("profiles", {
   photoPath: text("photo_path").notNull().default(""),
   createdAt: integer("created_at").notNull(),
 });
-export const insertProfileSchema = createInsertSchema(profiles).omit({ id: true, createdAt: true });
+export const insertProfileSchema = createInsertSchema(profiles).omit({ id: true, createdAt: true, tenantId: true });
 export type InsertProfile = z.infer<typeof insertProfileSchema>;
 export type Profile = typeof profiles.$inferSelect;
 
@@ -111,7 +113,7 @@ export const bookings = sqliteTable("bookings", {
   bookingGroup: text("booking_group").notNull(),
   createdAt: integer("created_at").notNull(),
 });
-export const insertBookingSchema = createInsertSchema(bookings).omit({ id: true });
+export const insertBookingSchema = createInsertSchema(bookings).omit({ id: true, tenantId: true });
 export type InsertBooking = z.infer<typeof insertBookingSchema>;
 export type Booking = typeof bookings.$inferSelect;
 
@@ -124,7 +126,7 @@ export const dateOverrides = sqliteTable("date_overrides", {
   startTime: text("start_time"),
   endTime: text("end_time"),
 });
-export const insertDateOverrideSchema = createInsertSchema(dateOverrides).omit({ id: true });
+export const insertDateOverrideSchema = createInsertSchema(dateOverrides).omit({ id: true, tenantId: true });
 export type InsertDateOverride = z.infer<typeof insertDateOverrideSchema>;
 export type DateOverride = typeof dateOverrides.$inferSelect;
 
@@ -138,7 +140,7 @@ export const bookingParticipants = sqliteTable("booking_participants", {
   profileId: integer("profile_id").notNull(),
   createdAt: integer("created_at").notNull(),
 });
-export const insertBookingParticipantSchema = createInsertSchema(bookingParticipants).omit({ id: true, createdAt: true });
+export const insertBookingParticipantSchema = createInsertSchema(bookingParticipants).omit({ id: true, createdAt: true, tenantId: true });
 export type InsertBookingParticipant = z.infer<typeof insertBookingParticipantSchema>;
 export type BookingParticipant = typeof bookingParticipants.$inferSelect;
 
@@ -155,7 +157,7 @@ export const coachingNotes = sqliteTable("coaching_notes", {
   mediaUrl: text("media_url"),     // external URL (e.g. YouTube)
   createdAt: integer("created_at").notNull(),
 });
-export const insertCoachingNoteSchema = createInsertSchema(coachingNotes).omit({ id: true, createdAt: true });
+export const insertCoachingNoteSchema = createInsertSchema(coachingNotes).omit({ id: true, createdAt: true, tenantId: true });
 export type InsertCoachingNote = z.infer<typeof insertCoachingNoteSchema>;
 export type CoachingNote = typeof coachingNotes.$inferSelect;
 
@@ -173,7 +175,7 @@ export const resources = sqliteTable("resources", {
   filePath: text("file_path").notNull().default(""), // disk filename for pdf/image uploads
   createdAt: integer("created_at").notNull(),
 });
-export const insertResourceSchema = createInsertSchema(resources).omit({ id: true, createdAt: true });
+export const insertResourceSchema = createInsertSchema(resources).omit({ id: true, createdAt: true, tenantId: true });
 export type InsertResource = z.infer<typeof insertResourceSchema>;
 export type Resource = typeof resources.$inferSelect;
 

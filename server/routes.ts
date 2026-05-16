@@ -1,6 +1,7 @@
-import type { Express, Request } from "express";
+import type { Express, Request, Response } from "express";
 import type { Server } from 'node:http';
 import { storage, sqlite } from "./storage";
+import { requireTenantId, getTenantById } from "./tenant";
 import {
   checkoutSchema, insertAvailabilitySchema, insertDateOverrideSchema,
   insertProfileSchema, normalizePhone,
@@ -121,11 +122,11 @@ function formatDateLong(d: string) {
 }
 
 // open windows (in minutes-from-midnight) for a given local date
-function openWindowsForDate(date: string) {
-  const overrides = storage.getDateOverrides().filter(o => o.date === date);
+function openWindowsForDate(tenantId: number, date: string) {
+  const overrides = storage.getDateOverrides(tenantId).filter(o => o.date === date);
   if (overrides.some(o => o.type === "closed")) return [];
   const dow = dayOfWeek(date);
-  const base = storage.getAvailability().filter(a => a.dayOfWeek === dow);
+  const base = storage.getAvailability(tenantId).filter(a => a.dayOfWeek === dow);
   const wins = base.map(b => ({ start: timeToMin(b.startTime), end: timeToMin(b.endTime) }));
   for (const o of overrides) {
     if (o.type === "extra" && o.startTime && o.endTime) {
@@ -142,21 +143,21 @@ function openWindowsForDate(date: string) {
   return merged;
 }
 
-function slotsForDate(date: string) {
+function slotsForDate(tenantId: number, date: string) {
   const out: string[] = [];
-  for (const w of openWindowsForDate(date)) {
+  for (const w of openWindowsForDate(tenantId, date)) {
     for (let m = w.start; m + SLOT_MIN <= w.end; m += SLOT_MIN) out.push(toIso(date, minToTime(m)));
   }
   return out;
 }
 
-function availabilityForRange(startDate: string, endDate: string) {
-  const all = storage.getBookingsInRange(startDate + "T00:00", endDate + "T23:59");
+function availabilityForRange(tenantId: number, startDate: string, endDate: string) {
+  const all = storage.getBookingsInRange(tenantId, startDate + "T00:00", endDate + "T23:59");
   const bookedSet = new Set(all.map(b => b.start));
   const days: { date: string; slots: { start: string; booked: boolean }[] }[] = [];
   let cur = startDate;
   while (cur <= endDate) {
-    days.push({ date: cur, slots: slotsForDate(cur).map(s => ({ start: s, booked: bookedSet.has(s) })) });
+    days.push({ date: cur, slots: slotsForDate(tenantId, cur).map(s => ({ start: s, booked: bookedSet.has(s) })) });
     cur = addDays(cur, 1);
   }
   return days;
@@ -172,7 +173,7 @@ type GapWarning = {
   suggestion?: { from: string; to: string; reason: string };
 };
 
-function detectGaps(selectedSlots: string[], excludeBookingIds: number[] = []): GapWarning[] {
+function detectGaps(tenantId: number, selectedSlots: string[], excludeBookingIds: number[] = []): GapWarning[] {
   const warnings: GapWarning[] = [];
   const byDate = new Map<string, string[]>();
   for (const s of selectedSlots) {
@@ -180,9 +181,9 @@ function detectGaps(selectedSlots: string[], excludeBookingIds: number[] = []): 
     byDate.get(isoDate(s))!.push(s);
   }
   for (const [date, userSlots] of byDate) {
-    const windows = openWindowsForDate(date);
+    const windows = openWindowsForDate(tenantId, date);
     if (!windows.length) continue;
-    const existing = storage.getBookingsInRange(date + "T00:00", date + "T23:59")
+    const existing = storage.getBookingsInRange(tenantId, date + "T00:00", date + "T23:59")
       .filter(b => !excludeBookingIds.includes(b.id))
       .map(b => b.start);
     const allBooked = new Set<string>([...existing, ...userSlots]);
@@ -349,11 +350,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // --- Auth ---
   app.post("/api/auth/login", (req, res) => {
+    const tenantId = requireTenantId(req, res);
+    if (tenantId === null) return;
     const { phone, password } = req.body || {};
     if (typeof phone !== "string" || typeof password !== "string") {
       return res.status(400).json({ error: "phone and password required" });
     }
-    const result = checkLogin(phone, password);
+    const result = checkLogin(phone, password, tenantId);
     if (!result.ok) return res.status(401).json({ error: "Invalid phone or password" });
     setSessionCookie(res, result.token);
     res.json({ ok: true });
@@ -371,7 +374,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // require current password to confirm changes
     if (typeof currentPassword !== "string") return res.status(400).json({ error: "current password required" });
     const currentPhone = getAdminPhone();
-    const verify = checkLogin(currentPhone, currentPassword);
+    const tenantId = req.tenantId ?? 1;
+    const verify = checkLogin(currentPhone, currentPassword, tenantId);
     if (!verify.ok) return res.status(401).json({ error: "Current password is incorrect" });
     // checkLogin created a session as a side-effect; we don't need it
     logout(verify.token);
@@ -388,27 +392,30 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Availability
-  app.get("/api/availability", (_req, res) => {
-    res.json({ weekly: storage.getAvailability(), overrides: storage.getDateOverrides() });
+  app.get("/api/availability", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    res.json({ weekly: storage.getAvailability(tenantId), overrides: storage.getDateOverrides(tenantId) });
   });
   app.put("/api/availability", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const parsed = z.array(insertAvailabilitySchema).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    storage.setAvailability(parsed.data);
+    storage.setAvailability(tenantId, parsed.data);
     res.json({ ok: true });
   });
   app.post("/api/overrides", requireAdmin, async (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const parsed = insertDateOverrideSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    const override = storage.addDateOverride(parsed.data);
+    const override = storage.addDateOverride(tenantId, parsed.data);
 
     // If this is a 'closed' blackout, cancel every booking on that date and notify the parents
     // via the configured reminder channel (email by default, with SMS fallback).
     const cancelled: { id: number; start: string; playerName: string; parentName: string; phone: string; email: string; notified: boolean; notifyError?: string }[] = [];
     if (parsed.data.type === "closed") {
       const date = parsed.data.date;
-      const onDate = storage.getBookingsInRange(date + "T00:00", date + "T23:59")
-        .map(b => storage.expandBooking(b))
+      const onDate = storage.getBookingsInRange(tenantId, date + "T00:00", date + "T23:59")
+        .map(b => storage.expandBooking(tenantId, b))
         .sort((a, b) => a.start.localeCompare(b.start));
       // group by profileId so each parent gets ONE notification covering all of their cancelled sessions
       const byProfile = new Map<number, typeof onDate>();
@@ -445,7 +452,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         }
         for (const r of rows) {
           cancelRemindersForBooking(r.id);
-          storage.deleteBooking(r.id);
+          storage.deleteBooking(tenantId, r.id);
           cancelled.push({
             id: r.id, start: r.start, playerName: r.playerName, parentName: r.parentName,
             phone, email,
@@ -457,12 +464,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ override, cancelledBookings: cancelled });
   });
   app.delete("/api/overrides/:id", requireAdmin, (req, res) => {
-    storage.deleteDateOverride(Number(req.params.id));
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    storage.deleteDateOverride(tenantId, Number(req.params.id));
     res.json({ ok: true });
   });
 
   // Slot list (public)
   app.get("/api/slots", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const start = String(req.query.start || "");
     const end = String(req.query.end || "");
     if (!start || !end) return res.status(400).json({ error: "start and end required" });
@@ -476,39 +485,43 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         effectiveEnd = new Date(maxEndMs).toISOString();
       }
     }
-    res.json({ days: availabilityForRange(start, effectiveEnd), maxBookingDays: MAX_BOOKING_DAYS });
+    res.json({ days: availabilityForRange(tenantId, start, effectiveEnd), maxBookingDays: MAX_BOOKING_DAYS });
   });
 
   // Profiles
   app.get("/api/profile/:phone", (req, res) => {
-    const p = storage.getProfileByPhone(req.params.phone);
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const p = storage.getProfileByPhone(tenantId, req.params.phone);
     if (!p) return res.status(404).json({ error: "Not found" });
     res.json(p);
   });
   app.post("/api/profile", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const parsed = insertProfileSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    res.json(storage.upsertProfile(parsed.data));
+    res.json(storage.upsertProfile(tenantId, parsed.data));
   });
 
   // Gap check (used at review step)
   app.post("/api/check-gaps", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const parsed = z.object({
       slots: z.array(z.string()),
       excludeBookingIds: z.array(z.number()).optional(),
     }).safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: "invalid" });
-    res.json({ warnings: detectGaps(parsed.data.slots, parsed.data.excludeBookingIds ?? []) });
+    res.json({ warnings: detectGaps(tenantId, parsed.data.slots, parsed.data.excludeBookingIds ?? []) });
   });
 
   // Checkout
   app.post("/api/bookings", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const parsed = checkoutSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { slots, phone, email, parentName, playerName, notes } = parsed.data;
     const isAdmin = isAdminReq(req);
     // upsert profile
-    const profile = storage.upsertProfile({ phone: normalizePhone(phone), email, parentName, playerName, notes });
+    const profile = storage.upsertProfile(tenantId, { phone: normalizePhone(phone), email, parentName, playerName, notes });
     // Customers can't book inside 24h or beyond MAX_BOOKING_DAYS; admins bypass both.
     if (!isAdmin && slots.some(s => isWithin24h(s))) {
       return res.status(400).json({ error: "Bookings must be at least 24 hours in advance." });
@@ -517,7 +530,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: `Bookings can be made up to ${MAX_BOOKING_DAYS} days in advance.` });
     }
     // collision check
-    const existing = storage.getBookingsByStarts(slots);
+    const existing = storage.getBookingsByStarts(tenantId, slots);
     if (existing.length) {
       return res.status(409).json({
         error: "Some times were just taken. Please refresh and choose again.",
@@ -525,13 +538,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
     const bookingGroup = randomUUID();
-    const rows = storage.createBookings(slots.map(s => ({
-      start: s, profileId: profile.id, bookingGroup, createdAt: Date.now(),
+    const rows = storage.createBookings(tenantId, slots.map(s => ({
+      start: s, profileId: profile.id, bookingGroup, createdAt: Date.now(), lessonTypeId: null,
     })));
     for (const r of rows) {
       scheduleRemindersForBooking(r.id, r.start, profile.phone, profile.playerName, profile.email);
     }
-    const expanded = rows.map(r => storage.expandBooking(r));
+    const expanded = rows.map(r => storage.expandBooking(tenantId, r));
     const ics = icsForBookings(expanded);
     const coachName = getSetting("coachName") || "Coach Skinner";
     const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
@@ -606,33 +619,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // List bookings (admin)
-  app.get("/api/bookings", requireAdmin, (_req, res) => {
-    const rows = storage.getBookings().map(b => storage.expandBooking(b));
+  app.get("/api/bookings", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const rows = storage.getBookings(tenantId).map(b => storage.expandBooking(tenantId, b));
     res.json({ bookings: rows });
   });
 
   // List bookings for a profile (self-service lookup by phone)
   app.get("/api/my-bookings/:phone", (req, res) => {
-    const profile = storage.getProfileByPhone(req.params.phone);
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const profile = storage.getProfileByPhone(tenantId, req.params.phone);
     if (!profile) return res.json({ profile: null, bookings: [] });
-    const rows = storage.getBookingsForProfile(profile.id).map(b => storage.expandBooking(b));
+    const rows = storage.getBookingsForProfile(tenantId, profile.id).map(b => storage.expandBooking(tenantId, b));
     rows.sort((a, b) => a.start.localeCompare(b.start));
     res.json({ profile, bookings: rows });
   });
 
   // List bookings for a profile (self-service lookup by EMAIL)
   app.get("/api/my-bookings-by-email/:email", (req, res) => {
-    const profile = storage.getProfileByEmail(decodeURIComponent(req.params.email));
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const profile = storage.getProfileByEmail(tenantId, decodeURIComponent(req.params.email));
     if (!profile) return res.json({ profile: null, bookings: [] });
-    const rows = storage.getBookingsForProfile(profile.id).map(b => storage.expandBooking(b));
+    const rows = storage.getBookingsForProfile(tenantId, profile.id).map(b => storage.expandBooking(tenantId, b));
     rows.sort((a, b) => a.start.localeCompare(b.start));
     res.json({ profile, bookings: rows });
   });
 
   // Self-service profile update — requires matching email or phone (acts as proof of ownership)
   app.patch("/api/profile/:id", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
-    const existing = storage.getProfileById(id);
+    const existing = storage.getProfileById(tenantId, id);
     if (!existing) return res.status(404).json({ error: "Not found" });
     const isAdmin = !!(req as any).session?.admin;
     if (!isAdmin) {
@@ -653,28 +670,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (typeof req.body?.notes === "string") patch.notes = req.body.notes;
     // If changing phone, ensure no conflict with another profile
     if (patch.phone) {
-      const collides = storage.getProfileByPhone(patch.phone);
+      const collides = storage.getProfileByPhone(tenantId, patch.phone);
       if (collides && collides.id !== id) {
         return res.status(409).json({ error: "That phone number is already used by another account." });
       }
     }
-    const updated = storage.updateProfile(id, patch);
+    const updated = storage.updateProfile(tenantId, id, patch);
     res.json(updated);
   });
 
   // Cancel single booking (customer or admin)
   app.delete("/api/bookings/:id", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
     const isAdmin = String(req.query.admin || "") === "1";
-    const b = storage.getBookingById(id);
+    const b = storage.getBookingById(tenantId, id);
     if (!b) return res.status(404).json({ error: "Not found" });
     if (!isAdmin && isWithin24h(b.start)) {
       return res.status(400).json({ error: "Within 24 hours — please contact the coach to cancel." });
     }
     // Capture profile/details before delete so we can email
-    const profile = storage.getProfileById(b.profileId);
+    const profile = storage.getProfileById(tenantId, b.profileId);
     cancelRemindersForBooking(id);
-    storage.deleteBooking(id);
+    storage.deleteBooking(tenantId, id);
 
     // Fire-and-forget notifications
     const coachName = getSetting("coachName") || "Coach Skinner";
@@ -707,10 +725,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Reschedule single booking
   app.patch("/api/bookings/:id", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
     const newStart = String(req.body?.newStart || "");
     const isAdmin = String(req.query.admin || "") === "1";
-    const b = storage.getBookingById(id);
+    const b = storage.getBookingById(tenantId, id);
     if (!b) return res.status(404).json({ error: "Not found" });
     if (!isAdmin && isWithin24h(b.start)) {
       return res.status(400).json({ error: "Within 24 hours — please contact the coach to reschedule." });
@@ -722,14 +741,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: `New time must be within ${MAX_BOOKING_DAYS} days.` });
     }
     // collision
-    const existing = storage.getBookingsByStarts([newStart]).filter(x => x.id !== id);
+    const existing = storage.getBookingsByStarts(tenantId, [newStart]).filter(x => x.id !== id);
     if (existing.length) return res.status(409).json({ error: "That time is already booked." });
     // ensure newStart is a valid available slot
-    const validSlots = new Set(slotsForDate(isoDate(newStart)));
+    const validSlots = new Set(slotsForDate(tenantId, isoDate(newStart)));
     if (!validSlots.has(newStart)) return res.status(400).json({ error: "Not an open time slot." });
     const oldStart = b.start;
-    storage.updateBookingStart(id, newStart);
-    const profile = storage.getProfileById(b.profileId);
+    storage.updateBookingStart(tenantId, id, newStart);
+    const profile = storage.getProfileById(tenantId, b.profileId);
     if (profile) rescheduleRemindersForBooking(id, newStart, profile.phone, profile.playerName, profile.email);
 
     // Fire-and-forget notifications
@@ -769,8 +788,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Public coach contact info (used by the booking confirmation 'Text Coach' button)
-  app.get("/api/coach", (_req, res) => {
-    res.json({ name: getSetting("coachName"), textPhone: getSetting("coachPhone") });
+  app.get("/api/coach", (req, res) => {
+    const tenantId = requireTenantId(req, res);
+    if (tenantId === null) return;
+    const t = getTenantById(sqlite, tenantId);
+    if (!t) return res.status(404).json({ error: "Tenant not found" });
+    res.json({
+      name: t.name || getSetting("coachName"),
+      textPhone: t.contact_phone || getSetting("coachPhone"),
+      email: t.contact_email || getSetting("coachEmail"),
+    });
   });
 
   // Settings (admin)
@@ -814,9 +841,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Upload or replace a profile photo. Admin OR customer with matching proofEmail.
   app.post("/api/profile/:id/photo", photoUpload.single("photo"), async (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     try {
       const id = Number(req.params.id);
-      const profile = storage.getProfileById(id);
+      const profile = storage.getProfileById(tenantId, id);
       if (!profile) return res.status(404).json({ error: "Profile not found" });
       if (!isAdminReq(req)) {
         const proof = String((req.body && req.body.proofEmail) || "");
@@ -843,7 +871,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
 
       const publicPath = `/uploads/photos/${filename}`;
-      const updated = storage.updateProfile(id, { photoPath: publicPath });
+      const updated = storage.updateProfile(tenantId, id, { photoPath: publicPath });
       res.json({ ok: true, photoPath: publicPath, profile: updated });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || "Upload failed" });
@@ -852,8 +880,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Delete a profile photo. Admin OR customer with matching proofEmail.
   app.delete("/api/profile/:id/photo", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
-    const profile = storage.getProfileById(id);
+    const profile = storage.getProfileById(tenantId, id);
     if (!profile) return res.status(404).json({ error: "Profile not found" });
     if (!isAdminReq(req)) {
       const proof = String(req.query.proofEmail || "");
@@ -866,15 +895,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const oldPath = path.join(PHOTO_DIR, oldName);
       try { if (fs.existsSync(oldPath)) fs.unlinkSync(oldPath); } catch {}
     }
-    const updated = storage.updateProfile(id, { photoPath: "" });
+    const updated = storage.updateProfile(tenantId, id, { photoPath: "" });
     res.json({ ok: true, profile: updated });
   });
 
   // ===== Coaching notes thread =====
   // List notes for a profile. Admin OR customer with matching proofEmail.
   app.get("/api/notes/:profileId", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const profileId = Number(req.params.profileId);
-    const profile = storage.getProfileById(profileId);
+    const profile = storage.getProfileById(tenantId, profileId);
     if (!profile) return res.status(404).json({ error: "Profile not found" });
     if (!isAdminReq(req)) {
       const proof = String(req.query.proofEmail || "");
@@ -882,7 +912,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         return res.status(403).json({ error: "Verification failed." });
       }
     }
-    res.json({ notes: storage.getNotesForProfile(profileId) });
+    res.json({ notes: storage.getNotesForProfile(tenantId, profileId) });
   });
 
   // Static file serving for note attachments. Path tokens are unguessable.
@@ -894,8 +924,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Accepts multipart/form-data with optional `file` (image/video) or `mediaUrl` (link).
   // Sends an email alert to the OTHER party.
   app.post("/api/notes/:profileId", noteUpload.single("file"), async (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const profileId = Number(req.params.profileId);
-    const profile = storage.getProfileById(profileId);
+    const profile = storage.getProfileById(tenantId, profileId);
     if (!profile) {
       if (req.file) { try { fs.unlinkSync(path.join(NOTES_DIR, req.file.filename)); } catch {} }
       return res.status(404).json({ error: "Profile not found" });
@@ -940,7 +971,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       mediaUrl = mediaUrlInput;
     }
 
-    const note = storage.addNote({ profileId, author, text, mediaType, mediaPath, mediaUrl } as any);
+    const note = storage.addNote(tenantId, { profileId, author, text, mediaType, mediaPath, mediaUrl } as any);
 
     // Fire-and-forget email alert to the OTHER party
     const coachName = getSetting("coachName") || "Coach Skinner";
@@ -1008,21 +1039,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Delete a note. Admin only (simplest; matches scope).
   app.delete("/api/notes/:noteId", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.noteId);
-    const existing = storage.getNoteById(id);
+    const existing = storage.getNoteById(tenantId, id);
     if (existing?.mediaPath) {
       try { fs.unlinkSync(path.join(NOTES_DIR, existing.mediaPath)); } catch {}
     }
-    storage.deleteNote(id);
+    storage.deleteNote(tenantId, id);
     res.json({ ok: true });
   });
 
   // Admin: list all profiles with booking stats
-  app.get("/api/admin/profiles", requireAdmin, (_req, res) => {
-    const all = storage.getAllProfiles();
+  app.get("/api/admin/profiles", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const all = storage.getAllProfiles(tenantId);
     const now = new Date().toISOString();
     const out = all.map((p) => {
-      const bks = storage.getBookingsForProfile(p.id);
+      const bks = storage.getBookingsForProfile(tenantId, p.id);
       const sorted = bks.slice().sort((a, b) => (a.start < b.start ? 1 : -1));
       const upcoming = bks.filter((b) => b.start >= now);
       return {
@@ -1037,21 +1070,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Admin: delete a profile and all associated bookings/notes/photo
   app.delete("/api/admin/profiles/:id", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
-    const profile = storage.getProfileById(id);
+    const profile = storage.getProfileById(tenantId, id);
     if (!profile) return res.status(404).json({ error: "Not found" });
-    const bks = storage.getBookingsForProfile(id);
+    const bks = storage.getBookingsForProfile(tenantId, id);
     for (const b of bks) {
       try { cancelRemindersForBooking(b.id); } catch {}
-      storage.deleteBooking(b.id);
+      storage.deleteBooking(tenantId, b.id);
     }
-    const notes = storage.getNotesForProfile(id);
-    for (const n of notes) storage.deleteNote(n.id);
+    const notes = storage.getNotesForProfile(tenantId, id);
+    for (const n of notes) storage.deleteNote(tenantId, n.id);
     if (profile.photoPath) {
       const filename = profile.photoPath.replace(/^\/uploads\/photos\//, "");
       try { fs.unlinkSync(path.join(PHOTO_DIR, filename)); } catch {}
     }
-    storage.deleteProfile(id);
+    storage.deleteProfile(tenantId, id);
     res.json({ ok: true });
   });
 
@@ -1078,18 +1112,25 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // Public-but-gated: any signed-up parent (proves email) OR admin can list resources
   app.get("/api/resources", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const proof = String(req.query.proofEmail || "").trim().toLowerCase();
     if (!isAdminReq(req)) {
       if (!proof) return res.status(401).json({ error: "Sign up or sign in to view resources." });
-      const prof = storage.getProfileByEmail(proof);
+      const prof = storage.getProfileByEmail(tenantId, proof);
       if (!prof) return res.status(403).json({ error: "We couldn't find a profile with that email. Book your first lesson to get access." });
     }
-    const list = storage.getResources();
-    res.json({ resources: list, categories: RESOURCE_CATEGORIES });
+    const list = storage.getResources(tenantId);
+    // Categories now come from per-tenant resource_categories table.  Map to
+    // the legacy { id, label } shape the client expects.
+    const cats = sqlite.prepare(
+      `SELECT slug as id, label FROM resource_categories WHERE tenant_id = ? ORDER BY sort_order ASC, id ASC`,
+    ).all(tenantId) as { id: string; label: string }[];
+    res.json({ resources: list, categories: cats });
   });
 
   // Admin: create a resource (link, or upload)
   app.post("/api/admin/resources", requireAdmin, resourceUpload.single("file"), (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     try {
       const body = req.body || {};
       const type = String(body.type || "");
@@ -1099,8 +1140,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const urlIn = String(body.url || "").trim();
       if (!title) return res.status(400).json({ error: "Title is required" });
       if (!["pdf", "link", "image", "video"].includes(type)) return res.status(400).json({ error: "Invalid type" });
-      const validCats = RESOURCE_CATEGORIES.map(c => c.id);
-      if (!validCats.includes(category as any)) return res.status(400).json({ error: "Invalid category" });
+      const validCats = (sqlite.prepare(
+        `SELECT slug FROM resource_categories WHERE tenant_id = ?`,
+      ).all(tenantId) as { slug: string }[]).map(r => r.slug);
+      if (!validCats.includes(category)) return res.status(400).json({ error: "Invalid category" });
 
       let url = "";
       let filePath = "";
@@ -1113,7 +1156,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         url = `/uploads/resources/${req.file.filename}`;
       }
       const parsed = insertResourceSchema.parse({ type, category, title, description, url, filePath });
-      const r = storage.createResource(parsed);
+      const r = storage.createResource(tenantId, parsed);
       res.json({ resource: r });
     } catch (e: any) {
       // Clean up uploaded file if validation failed
@@ -1123,9 +1166,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.patch("/api/admin/resources/:id", requireAdmin, resourceUpload.single("file"), (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     try {
       const id = Number(req.params.id);
-      const existing = storage.getResourceById(id);
+      const existing = storage.getResourceById(tenantId, id);
       if (!existing) return res.status(404).json({ error: "Not found" });
       const body = req.body || {};
       const patch: any = {};
@@ -1136,7 +1180,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       if (typeof body.description === "string") patch.description = body.description.trim();
       if (typeof body.category === "string") {
-        const validCats = RESOURCE_CATEGORIES.map(c => c.id);
+        const validCats = (sqlite.prepare(
+          `SELECT slug FROM resource_categories WHERE tenant_id = ?`,
+        ).all(tenantId) as { slug: string }[]).map(r => r.slug);
         if (!validCats.includes(body.category)) return res.status(400).json({ error: "Invalid category" });
         patch.category = body.category;
       }
@@ -1153,7 +1199,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         patch.filePath = req.file.filename;
         patch.url = `/uploads/resources/${req.file.filename}`;
       }
-      const updated = storage.updateResource(id, patch);
+      const updated = storage.updateResource(tenantId, id, patch);
       res.json({ resource: updated });
     } catch (e: any) {
       if (req.file) { try { fs.unlinkSync(path.join(RESOURCE_DIR, req.file.filename)); } catch {} }
@@ -1162,13 +1208,74 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   app.delete("/api/admin/resources/:id", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
-    const r = storage.getResourceById(id);
+    const r = storage.getResourceById(tenantId, id);
     if (!r) return res.status(404).json({ error: "Not found" });
     if (r.filePath) {
       try { fs.unlinkSync(path.join(RESOURCE_DIR, r.filePath)); } catch {}
     }
-    storage.deleteResource(id);
+    storage.deleteResource(tenantId, id);
+    res.json({ ok: true });
+  });
+
+  // ===== Per-tenant resource categories =====
+  // Coaches can add/rename/delete their own categories.  Slugs are unique
+  // per tenant.  Default categories are seeded at signup based on sport.
+  app.get("/api/admin/resource-categories", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const rows = sqlite.prepare(
+      `SELECT id, slug, label, sort_order FROM resource_categories WHERE tenant_id = ? ORDER BY sort_order ASC, id ASC`,
+    ).all(tenantId);
+    res.json({ categories: rows });
+  });
+
+  app.post("/api/admin/resource-categories", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const label = String(req.body?.label || "").trim();
+    if (!label) return res.status(400).json({ error: "Label is required" });
+    const slug = label.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "category";
+    // Ensure unique slug within tenant
+    const taken = sqlite.prepare(
+      `SELECT 1 FROM resource_categories WHERE tenant_id = ? AND slug = ? LIMIT 1`,
+    ).get(tenantId, slug);
+    if (taken) return res.status(409).json({ error: "A category with that name already exists." });
+    const max = (sqlite.prepare(
+      `SELECT COALESCE(MAX(sort_order), -1) as m FROM resource_categories WHERE tenant_id = ?`,
+    ).get(tenantId) as { m: number }).m;
+    const info = sqlite.prepare(
+      `INSERT INTO resource_categories (tenant_id, slug, label, sort_order, created_at) VALUES (?, ?, ?, ?, ?)`,
+    ).run(tenantId, slug, label, max + 1, Date.now());
+    res.json({ category: { id: info.lastInsertRowid, slug, label } });
+  });
+
+  app.patch("/api/admin/resource-categories/:id", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const id = Number(req.params.id);
+    const label = String(req.body?.label || "").trim();
+    if (!label) return res.status(400).json({ error: "Label is required" });
+    const info = sqlite.prepare(
+      `UPDATE resource_categories SET label = ? WHERE tenant_id = ? AND id = ?`,
+    ).run(label, tenantId, id);
+    if (info.changes === 0) return res.status(404).json({ error: "Not found" });
+    res.json({ ok: true });
+  });
+
+  app.delete("/api/admin/resource-categories/:id", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const id = Number(req.params.id);
+    // Find the slug so we can check if any resources still use it
+    const row = sqlite.prepare(
+      `SELECT slug FROM resource_categories WHERE tenant_id = ? AND id = ?`,
+    ).get(tenantId, id) as { slug: string } | undefined;
+    if (!row) return res.status(404).json({ error: "Not found" });
+    const inUse = sqlite.prepare(
+      `SELECT COUNT(*) AS c FROM resources WHERE tenant_id = ? AND category = ?`,
+    ).get(tenantId, row.slug) as { c: number };
+    if (inUse.c > 0) {
+      return res.status(409).json({ error: `Can't delete — ${inUse.c} resource(s) still use this category. Move them first.` });
+    }
+    sqlite.prepare(`DELETE FROM resource_categories WHERE tenant_id = ? AND id = ?`).run(tenantId, id);
     res.json({ ok: true });
   });
 
