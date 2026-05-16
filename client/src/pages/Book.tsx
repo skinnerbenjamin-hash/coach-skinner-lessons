@@ -366,7 +366,6 @@ export default function Book() {
                       <input
                         type="file"
                         accept="image/*"
-                        capture="user"
                         className="hidden"
                         data-testid="input-signup-photo"
                         onChange={(e) => handlePhotoFile(e.target.files?.[0] ?? null)}
