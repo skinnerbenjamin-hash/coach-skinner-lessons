@@ -25,7 +25,7 @@ import {
   setSessionCookie, clearSessionCookie, getTokenFromReq, updateCredentials, getAdminPhone,
   listAdminUsers, addAdminUser, deleteAdminUser,
 } from "./auth";
-import { insertResourceSchema, RESOURCE_CATEGORIES } from "@shared/schema";
+import { insertResourceSchema, RESOURCE_CATEGORIES, insertLessonTypeSchema } from "@shared/schema";
 
 startReminderLoop();
 seedDefaultAdmin("9079527860", "1qaz!QAZ");
@@ -1385,6 +1385,62 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(409).json({ error: `Can't delete — ${inUse.c} resource(s) still use this category. Move them first.` });
     }
     sqlite.prepare(`DELETE FROM resource_categories WHERE tenant_id = ? AND id = ?`).run(tenantId, id);
+    res.json({ ok: true });
+  });
+
+  // ===== Lesson types (per tenant) =====
+  // Public list of active lesson types — used by booking page to render options.
+  app.get("/api/lesson-types", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const types = storage.listLessonTypes(tenantId, { activeOnly: true });
+    res.json({ lessonTypes: types });
+  });
+  // Admin list (includes inactive).
+  app.get("/api/admin/lesson-types", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    res.json({ lessonTypes: storage.listLessonTypes(tenantId) });
+  });
+  app.post("/api/admin/lesson-types", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const parsed = insertLessonTypeSchema.safeParse(req.body);
+    if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
+    const v = parsed.data;
+    if (v.durationMin % 30 !== 0 || v.durationMin <= 0) {
+      return res.status(400).json({ error: "Duration must be a positive multiple of 30 minutes." });
+    }
+    if (v.capacity < 1) return res.status(400).json({ error: "Capacity must be at least 1." });
+    const created = storage.createLessonType(tenantId, v);
+    res.json({ lessonType: created });
+  });
+  app.patch("/api/admin/lesson-types/:id", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const id = Number(req.params.id);
+    const partial = insertLessonTypeSchema.partial().safeParse(req.body);
+    if (!partial.success) return res.status(400).json({ error: partial.error.flatten() });
+    const v = partial.data;
+    if (v.durationMin !== undefined && (v.durationMin % 30 !== 0 || v.durationMin <= 0)) {
+      return res.status(400).json({ error: "Duration must be a positive multiple of 30 minutes." });
+    }
+    if (v.capacity !== undefined && v.capacity < 1) {
+      return res.status(400).json({ error: "Capacity must be at least 1." });
+    }
+    const updated = storage.updateLessonType(tenantId, id, v);
+    if (!updated) return res.status(404).json({ error: "Not found" });
+    res.json({ lessonType: updated });
+  });
+  app.delete("/api/admin/lesson-types/:id", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const id = Number(req.params.id);
+    // Safety: check if any bookings reference this lesson type.
+    const inUse = sqlite.prepare(
+      `SELECT COUNT(*) AS c FROM bookings WHERE tenant_id = ? AND lesson_type_id = ?`,
+    ).get(tenantId, id) as { c: number };
+    if (inUse.c > 0) {
+      return res.status(409).json({
+        error: `Can't delete — ${inUse.c} booking(s) reference this lesson type. Deactivate it instead.`,
+      });
+    }
+    storage.deleteLessonType(tenantId, id);
     res.json({ ok: true });
   });
 

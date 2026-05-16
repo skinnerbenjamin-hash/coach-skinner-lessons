@@ -1,5 +1,5 @@
 import {
-  availability, bookings, dateOverrides, profiles, coachingNotes, resources, normalizePhone,
+  availability, bookings, dateOverrides, profiles, coachingNotes, resources, lessonTypes, normalizePhone,
 } from '@shared/schema';
 import type {
   Availability, InsertAvailability,
@@ -8,6 +8,7 @@ import type {
   Profile, InsertProfile, BookingWithProfile,
   CoachingNote, InsertCoachingNote,
   Resource, InsertResource,
+  LessonType, InsertLessonType,
 } from '@shared/schema';
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
@@ -344,6 +345,37 @@ export class DatabaseStorage {
       .where(and(eq(resources.tenantId, tenantId), eq(resources.id, id)))
       .run();
     return this.getResourceById(tenantId, id);
+  }
+
+  // ===== Lesson types (per tenant) =====
+  listLessonTypes(tenantId: number, opts?: { activeOnly?: boolean }): LessonType[] {
+    const rows = db.select().from(lessonTypes)
+      .where(eq(lessonTypes.tenantId, tenantId))
+      .all();
+    const filtered = opts?.activeOnly ? rows.filter(r => r.active === 1) : rows;
+    return filtered.sort((a, b) => (a.sortOrder - b.sortOrder) || a.id - b.id);
+  }
+  getLessonTypeById(tenantId: number, id: number): LessonType | undefined {
+    return db.select().from(lessonTypes)
+      .where(and(eq(lessonTypes.tenantId, tenantId), eq(lessonTypes.id, id)))
+      .get();
+  }
+  createLessonType(tenantId: number, input: Omit<InsertLessonType, "tenantId">): LessonType {
+    const row = { ...input, tenantId, createdAt: Date.now() } as InsertLessonType & { createdAt: number };
+    return db.insert(lessonTypes).values(row).returning().get();
+  }
+  updateLessonType(tenantId: number, id: number, patch: Partial<Omit<InsertLessonType, "tenantId">>): LessonType | undefined {
+    const existing = this.getLessonTypeById(tenantId, id);
+    if (!existing) return undefined;
+    db.update(lessonTypes).set(patch)
+      .where(and(eq(lessonTypes.tenantId, tenantId), eq(lessonTypes.id, id)))
+      .run();
+    return this.getLessonTypeById(tenantId, id);
+  }
+  deleteLessonType(tenantId: number, id: number) {
+    db.delete(lessonTypes)
+      .where(and(eq(lessonTypes.tenantId, tenantId), eq(lessonTypes.id, id)))
+      .run();
   }
 
   // expand booking with profile data

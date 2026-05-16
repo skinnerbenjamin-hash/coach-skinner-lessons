@@ -66,6 +66,7 @@ export default function Admin() {
           <TabsTrigger value="overrides" data-testid="tab-overrides">Blackouts</TabsTrigger>
           <TabsTrigger value="reminders" data-testid="tab-reminders">SMS reminders</TabsTrigger>
           <TabsTrigger value="branding" data-testid="tab-branding">Branding</TabsTrigger>
+          <TabsTrigger value="lesson-types" data-testid="tab-lesson-types">Lesson types</TabsTrigger>
           <TabsTrigger value="settings" data-testid="tab-settings">Settings</TabsTrigger>
         </TabsList>
         <TabsContent value="bookings"><BookingsPanel /></TabsContent>
@@ -76,6 +77,7 @@ export default function Admin() {
         <TabsContent value="overrides"><OverridesPanel /></TabsContent>
         <TabsContent value="reminders"><RemindersPanel /></TabsContent>
         <TabsContent value="branding"><BrandingPanel /></TabsContent>
+        <TabsContent value="lesson-types"><LessonTypesPanel /></TabsContent>
         <TabsContent value="settings"><SettingsPanel /></TabsContent>
       </Tabs>
     </div>
@@ -2077,5 +2079,225 @@ function BrandingPanel() {
         </Button>
       </div>
     </div>
+  );
+}
+
+// =========================================================================
+// LessonTypesPanel — per-tenant CRUD for lesson types.
+// Each lesson type has: name, durationMin (multiples of 30), capacity, active.
+// Used by the booking page to render lesson options and (later) by group
+// booking flow which checks capacity vs current participant count.
+// =========================================================================
+type LessonType = {
+  id: number;
+  tenantId: number;
+  name: string;
+  durationMin: number;
+  capacity: number;
+  active: number;
+  sortOrder: number;
+  createdAt: number;
+};
+
+const DURATION_OPTIONS = [30, 45, 60, 75, 90, 120];
+
+function LessonTypesPanel() {
+  const { toast } = useToast();
+  const qc = useQueryClient();
+  const { data, isLoading } = useQuery<{ lessonTypes: LessonType[] }>({
+    queryKey: ["/api/admin/lesson-types"],
+  });
+
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [draft, setDraft] = useState<{ name: string; durationMin: number; capacity: number; active: number }>(
+    { name: "", durationMin: 60, capacity: 1, active: 1 },
+  );
+  const [showNew, setShowNew] = useState(false);
+
+  const createMut = useMutation({
+    mutationFn: async (payload: typeof draft) => {
+      const r = await apiRequest("POST", "/api/admin/lesson-types", { ...payload, sortOrder: 999 });
+      return r.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Lesson type created" });
+      qc.invalidateQueries({ queryKey: ["/api/admin/lesson-types"] });
+      qc.invalidateQueries({ queryKey: ["/api/lesson-types"] });
+      setShowNew(false);
+      setDraft({ name: "", durationMin: 60, capacity: 1, active: 1 });
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't create", description: e.message }),
+  });
+
+  const updateMut = useMutation({
+    mutationFn: async ({ id, patch }: { id: number; patch: Partial<typeof draft> }) => {
+      const r = await apiRequest("PATCH", `/api/admin/lesson-types/${id}`, patch);
+      return r.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Lesson type updated" });
+      qc.invalidateQueries({ queryKey: ["/api/admin/lesson-types"] });
+      qc.invalidateQueries({ queryKey: ["/api/lesson-types"] });
+      setEditingId(null);
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Update failed", description: e.message }),
+  });
+
+  const deleteMut = useMutation({
+    mutationFn: async (id: number) => {
+      await apiRequest("DELETE", `/api/admin/lesson-types/${id}`);
+    },
+    onSuccess: () => {
+      toast({ title: "Lesson type deleted" });
+      qc.invalidateQueries({ queryKey: ["/api/admin/lesson-types"] });
+      qc.invalidateQueries({ queryKey: ["/api/lesson-types"] });
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Delete failed", description: e.message }),
+  });
+
+  function startEdit(t: LessonType) {
+    setEditingId(t.id);
+    setDraft({ name: t.name, durationMin: t.durationMin, capacity: t.capacity, active: t.active });
+  }
+
+  if (isLoading || !data) return <p className="text-sm text-muted-foreground">Loading lesson types…</p>;
+
+  const types = data.lessonTypes;
+
+  return (
+    <Card>
+      <CardContent className="p-6 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-base font-semibold">Lesson types</h2>
+            <p className="text-xs text-muted-foreground">Define the lessons clients can book. Capacity &gt; 1 enables group bookings.</p>
+          </div>
+          {!showNew && (
+            <Button size="sm" onClick={() => setShowNew(true)} data-testid="button-lesson-type-new">
+              <Plus className="h-4 w-4 mr-1" /> Add lesson type
+            </Button>
+          )}
+        </div>
+
+        {showNew && (
+          <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
+            <div className="grid sm:grid-cols-4 gap-3">
+              <div className="sm:col-span-2">
+                <Label htmlFor="new-lt-name">Name</Label>
+                <Input id="new-lt-name" value={draft.name} placeholder="e.g. 1 Hour Lesson"
+                  onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} data-testid="input-lesson-type-name" />
+              </div>
+              <div>
+                <Label htmlFor="new-lt-duration">Duration (min)</Label>
+                <select id="new-lt-duration" className="w-full border rounded-md h-10 px-2 bg-background"
+                  value={draft.durationMin}
+                  onChange={e => setDraft(d => ({ ...d, durationMin: Number(e.target.value) }))}
+                  data-testid="select-lesson-type-duration">
+                  {DURATION_OPTIONS.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+              </div>
+              <div>
+                <Label htmlFor="new-lt-capacity">Capacity</Label>
+                <Input id="new-lt-capacity" type="number" min={1} value={draft.capacity}
+                  onChange={e => setDraft(d => ({ ...d, capacity: Math.max(1, Number(e.target.value) || 1) }))}
+                  data-testid="input-lesson-type-capacity" />
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2">
+              <Button variant="outline" size="sm" onClick={() => { setShowNew(false); setDraft({ name: "", durationMin: 60, capacity: 1, active: 1 }); }}>Cancel</Button>
+              <Button size="sm" onClick={() => createMut.mutate(draft)} disabled={!draft.name.trim() || createMut.isPending} data-testid="button-lesson-type-create">
+                {createMut.isPending ? "Creating…" : "Create"}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        <div className="border rounded-lg overflow-hidden">
+          <table className="w-full text-sm">
+            <thead className="bg-muted/50">
+              <tr className="text-left">
+                <th className="p-2 font-medium">Name</th>
+                <th className="p-2 font-medium">Duration</th>
+                <th className="p-2 font-medium">Capacity</th>
+                <th className="p-2 font-medium">Status</th>
+                <th className="p-2 font-medium text-right">Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {types.length === 0 && (
+                <tr><td colSpan={5} className="p-6 text-center text-sm text-muted-foreground">No lesson types yet. Add one above.</td></tr>
+              )}
+              {types.map(t => {
+                const editing = editingId === t.id;
+                return (
+                  <tr key={t.id} className="border-t" data-testid={`row-lesson-type-${t.id}`}>
+                    {editing ? (
+                      <>
+                        <td className="p-2">
+                          <Input value={draft.name} onChange={e => setDraft(d => ({ ...d, name: e.target.value }))} />
+                        </td>
+                        <td className="p-2">
+                          <select className="border rounded-md h-9 px-2 bg-background" value={draft.durationMin}
+                            onChange={e => setDraft(d => ({ ...d, durationMin: Number(e.target.value) }))}>
+                            {DURATION_OPTIONS.map(d => <option key={d} value={d}>{d} min</option>)}
+                          </select>
+                        </td>
+                        <td className="p-2">
+                          <Input type="number" min={1} value={draft.capacity}
+                            onChange={e => setDraft(d => ({ ...d, capacity: Math.max(1, Number(e.target.value) || 1) }))}
+                            className="w-20" />
+                        </td>
+                        <td className="p-2">
+                          <select className="border rounded-md h-9 px-2 bg-background" value={draft.active}
+                            onChange={e => setDraft(d => ({ ...d, active: Number(e.target.value) }))}>
+                            <option value={1}>Active</option>
+                            <option value={0}>Inactive</option>
+                          </select>
+                        </td>
+                        <td className="p-2 text-right space-x-1">
+                          <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>Cancel</Button>
+                          <Button size="sm" onClick={() => updateMut.mutate({ id: t.id, patch: draft })}
+                            disabled={!draft.name.trim() || updateMut.isPending}
+                            data-testid={`button-lesson-type-save-${t.id}`}>
+                            {updateMut.isPending ? "Saving…" : "Save"}
+                          </Button>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td className="p-2 font-medium">{t.name}</td>
+                        <td className="p-2">{t.durationMin} min</td>
+                        <td className="p-2">{t.capacity > 1 ? `${t.capacity} (group)` : "1 (private)"}</td>
+                        <td className="p-2">
+                          <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${t.active === 1 ? "bg-green-100 text-green-800" : "bg-gray-100 text-gray-700"}`}>
+                            {t.active === 1 ? "Active" : "Inactive"}
+                          </span>
+                        </td>
+                        <td className="p-2 text-right space-x-1">
+                          <Button size="sm" variant="ghost" onClick={() => startEdit(t)} data-testid={`button-lesson-type-edit-${t.id}`}>
+                            <Pencil className="h-4 w-4" />
+                          </Button>
+                          <Button size="sm" variant="ghost" onClick={() => {
+                            if (confirm(`Delete "${t.name}"? If bookings reference it, you'll be asked to deactivate instead.`)) {
+                              deleteMut.mutate(t.id);
+                            }
+                          }} data-testid={`button-lesson-type-delete-${t.id}`}>
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        <p className="text-xs text-muted-foreground">
+          Tip: duration must be a multiple of 30 minutes (matches the booking slot grid). You can't delete a lesson type that bookings still reference — deactivate it instead.
+        </p>
+      </CardContent>
+    </Card>
   );
 }

@@ -57,7 +57,7 @@ export const lessonTypes = sqliteTable("lesson_types", {
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: integer("created_at").notNull(),
 });
-export const insertLessonTypeSchema = createInsertSchema(lessonTypes).omit({ id: true, createdAt: true });
+export const insertLessonTypeSchema = createInsertSchema(lessonTypes).omit({ id: true, createdAt: true, tenantId: true });
 export type InsertLessonType = z.infer<typeof insertLessonTypeSchema>;
 export type LessonType = typeof lessonTypes.$inferSelect;
 
