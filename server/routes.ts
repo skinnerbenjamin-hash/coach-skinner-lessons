@@ -1,6 +1,6 @@
 import type { Express, Request } from "express";
 import type { Server } from 'node:http';
-import { storage } from "./storage";
+import { storage, sqlite } from "./storage";
 import {
   checkoutSchema, insertAvailabilitySchema, insertDateOverrideSchema,
   insertProfileSchema, normalizePhone,
@@ -313,13 +313,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
   // TEMP: Admin DB backup endpoint (pre-multi-tenant migration safety).
-  // Remove after backup is captured.
-  app.get("/api/admin/db-backup", requireAdmin, (_req, res) => {
-    const dbPath = process.env.DB_PATH || "data.db";
-    if (!fs.existsSync(dbPath)) return res.status(404).json({ error: "db not found" });
-    res.setHeader("Content-Type", "application/octet-stream");
-    res.setHeader("Content-Disposition", `attachment; filename="data-backup-${Date.now()}.db"`);
-    fs.createReadStream(dbPath).pipe(res);
+  // Remove after backup is captured. Uses better-sqlite3's .backup() method,
+  // which produces a consistent single-file snapshot (handles WAL correctly).
+  app.get("/api/admin/db-backup", requireAdmin, async (_req, res) => {
+    try {
+      const tmpPath = `/tmp/backup-${Date.now()}.db`;
+      // @ts-ignore - .backup() exists on better-sqlite3 Database instances
+      await (sqlite as any).backup(tmpPath);
+      res.setHeader("Content-Type", "application/octet-stream");
+      res.setHeader("Content-Disposition", `attachment; filename="data-backup-${Date.now()}.db"`);
+      const stream = fs.createReadStream(tmpPath);
+      stream.pipe(res);
+      stream.on("close", () => { try { fs.unlinkSync(tmpPath); } catch {} });
+    } catch (err: any) {
+      res.status(500).json({ error: "backup failed", detail: String(err?.message || err) });
+    }
   });
   // --- Auth ---
   app.post("/api/auth/login", (req, res) => {

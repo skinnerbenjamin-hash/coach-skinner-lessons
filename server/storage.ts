@@ -15,6 +15,7 @@ import { eq, and, gte, lte, inArray, desc } from "drizzle-orm";
 
 const sqlite = new Database(process.env.DB_PATH || "data.db");
 sqlite.pragma("journal_mode = WAL");
+export { sqlite };
 
 sqlite.exec(`
   CREATE TABLE IF NOT EXISTS availability (
