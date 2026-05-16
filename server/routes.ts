@@ -313,8 +313,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.get("/healthz", (_req, res) => res.status(200).send("ok"));
 
   // TEMP: Admin DB backup endpoint (pre-multi-tenant migration safety).
-  // Remove after backup is captured. Uses better-sqlite3's .backup() method,
-  // which produces a consistent single-file snapshot (handles WAL correctly).
+  // Remove after final migration deploy. Uses better-sqlite3's .backup() method
+  // for a WAL-consistent single-file snapshot.
   app.get("/api/admin/db-backup", requireAdmin, async (_req, res) => {
     try {
       const tmpPath = `/tmp/backup-${Date.now()}.db`;
@@ -329,6 +329,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       res.status(500).json({ error: "backup failed", detail: String(err?.message || err) });
     }
   });
+
   // --- Auth ---
   app.post("/api/auth/login", (req, res) => {
     const { phone, password } = req.body || {};

@@ -12,6 +12,15 @@ import type {
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import Database from "better-sqlite3";
 import { eq, and, gte, lte, inArray, desc } from "drizzle-orm";
+import { runMigrations } from "./migrations";
+
+// Side-effect imports: force auth.ts, settings.ts, reminders.ts to run their
+// CREATE TABLE IF NOT EXISTS statements before runMigrations() tries to add
+// tenant_id columns to their tables. ESM import hoisting + module init order
+// guarantee these run before this module's body executes.
+import "./auth";
+import "./settings";
+import "./reminders";
 
 const sqlite = new Database(process.env.DB_PATH || "data.db");
 sqlite.pragma("journal_mode = WAL");
@@ -97,13 +106,25 @@ try {
   }
 } catch (e) { console.error("coaching_notes migration failed:", e); }
 
+// LessonSpot multi-tenant migrations.
+// At this point auth/settings/reminders have already created their tables
+// (see side-effect imports at the top of this file). We can safely ALTER them.
+try {
+  runMigrations(sqlite);
+} catch (e) {
+  console.error("multi-tenant migrations failed:", e);
+  throw e;
+}
+
 export const db = drizzle(sqlite);
 
-// Seed default availability the first time: Mon–Sat 8am–6pm
+// Seed default availability the first time: Mon–Sat 8am–6pm (tenant 1).
 const existing = db.select().from(availability).all();
 if (existing.length === 0) {
   for (let d = 1; d <= 6; d++) {
-    db.insert(availability).values({ dayOfWeek: d, startTime: "08:00", endTime: "18:00" }).run();
+    db.insert(availability)
+      .values({ tenantId: 1, dayOfWeek: d, startTime: "08:00", endTime: "18:00" })
+      .run();
   }
 }
 
