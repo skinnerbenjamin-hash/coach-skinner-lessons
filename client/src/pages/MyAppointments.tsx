@@ -455,33 +455,58 @@ function PhotoUploader({ profile }: { profile: Profile }) {
       <button
         type="button"
         onClick={() => fileRef.current?.click()}
-        className="relative group"
+        className="relative group cursor-pointer"
         data-testid="button-upload-photo"
         disabled={uploading}
-        aria-label="Upload photo"
+        aria-label={profile.photoPath ? "Change photo" : "Upload photo"}
+        title={profile.photoPath ? "Click to change photo" : "Click to add a photo"}
       >
-        <Avatar className="h-16 w-16 ring-2 ring-border">
+        <Avatar className="h-16 w-16 ring-2 ring-primary/40">
           {profile.photoPath ? (
             <AvatarImage src={profile.photoPath} alt={profile.playerName} data-testid="img-profile-photo" />
           ) : null}
           <AvatarFallback className="text-base">{initialsFor(profile.playerName)}</AvatarFallback>
         </Avatar>
-        <div className="absolute inset-0 rounded-full bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
-          <Camera className="h-5 w-5 text-white" />
-        </div>
+        {/* Always-visible camera badge so parents see it's clickable */}
+        <span
+          className="absolute -bottom-1 -right-1 h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center shadow-sm ring-2 ring-background"
+          aria-hidden="true"
+        >
+          <Camera className="h-3.5 w-3.5" />
+        </span>
+        {/* Dim overlay on hover for extra feedback */}
+        <span className="absolute inset-0 rounded-full bg-black/30 opacity-0 group-hover:opacity-100 transition" aria-hidden="true" />
       </button>
       <input ref={fileRef} type="file" accept="image/*" className="hidden" onChange={onPick} data-testid="input-photo-file" />
       {profile.photoPath ? (
+        <div className="flex flex-col items-center leading-tight">
+          <button
+            type="button"
+            onClick={() => fileRef.current?.click()}
+            className="text-[11px] font-medium text-primary hover:underline"
+            data-testid="button-change-photo"
+          >
+            {uploading ? "Uploading…" : "Change photo"}
+          </button>
+          <button
+            type="button"
+            onClick={onRemove}
+            className="text-[11px] text-muted-foreground hover:text-destructive"
+            data-testid="button-remove-photo"
+          >
+            Remove
+          </button>
+        </div>
+      ) : (
         <button
           type="button"
-          onClick={onRemove}
-          className="text-[11px] text-muted-foreground hover:text-destructive"
-          data-testid="button-remove-photo"
+          onClick={() => fileRef.current?.click()}
+          className="text-[11px] font-medium text-primary hover:underline"
+          disabled={uploading}
+          data-testid="button-add-photo-link"
         >
-          Remove photo
+          {uploading ? "Uploading…" : "Tap to add photo"}
         </button>
-      ) : (
-        <span className="text-[11px] text-muted-foreground">{uploading ? "Uploading…" : "Add photo"}</span>
       )}
     </div>
   );
