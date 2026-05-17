@@ -2360,7 +2360,26 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // ===== Admin team management =====
   app.get("/api/admin/team", requireAdmin, (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
-    res.json({ admins: listAdminUsers(tenantId) });
+    const admins = listAdminUsers(tenantId);
+    // Annotate each admin with availability + lesson-type counts so the UI can
+    // warn when a lesson-giving coach has no schedule set yet (bookings would
+    // appear as "No sessions available" to the public).
+    const avail = sqlite.prepare(
+      `SELECT admin_user_id as adminUserId, COUNT(*) as n FROM availability WHERE tenant_id=? GROUP BY admin_user_id`
+    ).all(tenantId) as { adminUserId: number | null; n: number }[];
+    const lt = sqlite.prepare(
+      `SELECT admin_user_id as adminUserId, COUNT(*) as n FROM lesson_types WHERE tenant_id=? AND active=1 GROUP BY admin_user_id`
+    ).all(tenantId) as { adminUserId: number | null; n: number }[];
+    const availMap = new Map<number, number>();
+    for (const r of avail) if (r.adminUserId !== null) availMap.set(r.adminUserId, r.n);
+    const ltMap = new Map<number, number>();
+    for (const r of lt) if (r.adminUserId !== null) ltMap.set(r.adminUserId, r.n);
+    const annotated = admins.map(a => ({
+      ...a,
+      availabilityCount: availMap.get(a.id) ?? 0,
+      lessonTypeCount: ltMap.get(a.id) ?? 0,
+    }));
+    res.json({ admins: annotated });
   });
 
   app.post("/api/admin/team", requireAdmin, (req, res) => {

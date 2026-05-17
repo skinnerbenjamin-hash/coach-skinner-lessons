@@ -276,12 +276,27 @@ function AddBookingDialog() {
   const [date, setDate] = useState(todayISO());
   const [time, setTime] = useState("16:00");
   const [notes, setNotes] = useState("");
+  const [coachId, setCoachId] = useState<string>("");
 
   const { data: membersData } = useQuery<{ profiles: MemberRow[] }>({
     queryKey: ["/api/admin/profiles"],
     enabled: open,
   });
   const members = membersData?.profiles ?? [];
+  // Coach selector — only shown when 2+ lesson-givers. Default to first coach
+  // when the dialog opens so the server always gets an explicit assignment.
+  const { data: coachesData } = useQuery<AdminCoach[]>({
+    queryKey: ["/api/coaches"],
+    enabled: open,
+    staleTime: 60_000,
+  });
+  const coaches: AdminCoach[] = coachesData ?? [];
+  const showCoachPicker = coaches.length >= 2;
+  useEffect(() => {
+    if (open && coaches.length > 0 && !coachId) {
+      setCoachId(String(coaches[0].id));
+    }
+  }, [open, coaches, coachId]);
 
   function pickMember(id: string) {
     setMemberId(id);
@@ -301,7 +316,7 @@ function AddBookingDialog() {
   const create = useMutation({
     mutationFn: async () => {
       const slot = `${date}T${time}`;
-      const body = {
+      const body: any = {
         slots: [slot],
         phone: phone.trim(),
         email: email.trim(),
@@ -309,6 +324,9 @@ function AddBookingDialog() {
         playerName: playerName.trim(),
         notes: notes.trim(),
       };
+      // Only send coachId when multiple coaches exist — server falls back to
+      // the solo coach otherwise (preserves back-compat).
+      if (showCoachPicker && coachId) body.coachId = Number(coachId);
       const r = await apiRequest("POST", "/api/bookings", body);
       const json = await r.json();
       if (!r.ok) throw new Error(json?.error || "Couldn't create booking");
@@ -321,6 +339,7 @@ function AddBookingDialog() {
       setOpen(false);
       setMemberId("new");
       setParentName(""); setPlayerName(""); setPhone(""); setEmail(""); setNotes("");
+      // Don't reset coachId — admins likely book multiple slots for the same coach
     },
     onError: (e: any) => toast({ variant: "destructive", title: "Couldn't book", description: e.message }),
   });
@@ -344,6 +363,28 @@ function AddBookingDialog() {
         </DialogHeader>
 
         <div className="space-y-3">
+          {showCoachPicker && (
+            <div className="space-y-1">
+              <Label>Coach</Label>
+              <Select value={coachId} onValueChange={setCoachId}>
+                <SelectTrigger data-testid="select-admin-booking-coach">
+                  <SelectValue placeholder="Pick a coach" />
+                </SelectTrigger>
+                <SelectContent>
+                  {coaches.map(c => (
+                    <SelectItem key={c.id} value={String(c.id)}>
+                      <span className="flex items-center gap-2">
+                        {c.color && (
+                          <span className="inline-block rounded-full border" style={{ width: 10, height: 10, background: c.color, flexShrink: 0 }} />
+                        )}
+                        {c.name}
+                      </span>
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
           <div className="space-y-1">
             <Label>{labels.attendee}</Label>
             <Select value={memberId} onValueChange={pickMember}>
@@ -2005,6 +2046,9 @@ type AdminUser = {
   color: string;
   isOwner: boolean;
   createdAt: number;
+  // Annotated by /api/admin/team for setup warnings on the Team panel
+  availabilityCount?: number;
+  lessonTypeCount?: number;
 };
 
 function EditAdminDialog({ admin, onClose, onSaved }: { admin: AdminUser; onClose: () => void; onSaved: () => void }) {
@@ -2130,12 +2174,23 @@ function TeamPanel() {
 
   const admins = data?.admins ?? [];
   const missingEmail = admins.filter(a => !a.email);
+  // Coaches who give lessons but have no availability rows set yet — public
+  // bookings will show "No sessions available" until they configure hours.
+  const needsAvailability = admins.filter(a => a.givesLessons && (a.availabilityCount ?? 0) === 0);
 
   return (
     <div className="space-y-6 mt-4">
       {missingEmail.length > 0 && (
         <div className="bg-red-50 border border-red-300 text-red-800 rounded-md p-3 text-sm" data-testid="banner-missing-email">
           <strong>{missingEmail.length} admin{missingEmail.length === 1 ? "" : "s"} {missingEmail.length === 1 ? "is" : "are"} missing an email address.</strong> They can't receive booking notifications or reset their password until you add one.
+        </div>
+      )}
+      {needsAvailability.length > 0 && (
+        <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-md p-3 text-sm" data-testid="banner-missing-availability">
+          <strong>
+            {needsAvailability.map(a => a.name || "(no name)").join(", ")}
+          </strong>{" "}
+          {needsAvailability.length === 1 ? "gives" : "give"} lessons but {needsAvailability.length === 1 ? "has" : "have"} no availability set yet. Clients will see "No sessions available" for {needsAvailability.length === 1 ? "them" : "these coaches"} until you add hours on the Availability tab.
         </div>
       )}
       <Card>
@@ -2221,6 +2276,9 @@ function TeamPanel() {
                     {a.isOwner && <Badge variant="secondary" className="text-[10px]">Owner</Badge>}
                     {a.givesLessons && <Badge variant="outline" className="text-[10px]">Gives lessons</Badge>}
                     {a.receivesEmails && <Badge variant="outline" className="text-[10px]">Receives emails</Badge>}
+                    {a.givesLessons && (a.availabilityCount ?? 0) === 0 && (
+                      <Badge variant="outline" className="text-[10px] border-amber-400 text-amber-700 bg-amber-50" data-testid={`badge-no-hours-${a.id}`}>No hours set</Badge>
+                    )}
                   </div>
                   <div className="text-xs text-muted-foreground">
                     {a.email && <span className="mr-2">{a.email}</span>}
