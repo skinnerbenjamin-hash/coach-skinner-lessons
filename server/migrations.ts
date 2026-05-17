@@ -408,6 +408,55 @@ export function runMigrations(sqlite: DB) {
     );
   }
 
+  // ---- 7c. Per-admin email + notification + role columns (Stage 2A) -------
+  const adminUserCols: { col: string; def: string }[] = [
+    { col: "email", def: "TEXT NOT NULL DEFAULT ''" },
+    { col: "gives_lessons", def: "INTEGER NOT NULL DEFAULT 0" },
+    { col: "receives_emails", def: "INTEGER NOT NULL DEFAULT 0" },
+    { col: "color", def: "TEXT NOT NULL DEFAULT ''" },
+  ];
+  for (const { col, def } of adminUserCols) {
+    if (!columnExists(sqlite, "admin_users", col)) {
+      sqlite.exec(`ALTER TABLE admin_users ADD COLUMN ${col} ${def}`);
+    }
+  }
+
+  // Backfill: owners always give lessons + receive emails by default
+  sqlite.exec(`
+    UPDATE admin_users
+    SET gives_lessons = 1, receives_emails = 1
+    WHERE is_owner = 1 AND gives_lessons = 0 AND receives_emails = 0
+  `);
+
+  // Backfill colors deterministically from id using a 12-color palette.
+  const palette = [
+    "#0ea5e9", "#f97316", "#10b981", "#a855f7", "#ec4899", "#eab308",
+    "#06b6d4", "#84cc16", "#ef4444", "#8b5cf6", "#14b8a6", "#f59e0b",
+  ];
+  const noColor = sqlite.prepare(`SELECT id FROM admin_users WHERE color = ''`).all() as { id: number }[];
+  const setColor = sqlite.prepare(`UPDATE admin_users SET color = ? WHERE id = ?`);
+  for (const r of noColor) setColor.run(palette[r.id % palette.length], r.id);
+
+  // Backfill owner emails from the legacy getSetting('coachEmail') or
+  // tenants.contact_email so existing single-admin sites have a working address.
+  const ownersNoEmail = sqlite.prepare(`
+    SELECT au.id, au.tenant_id, t.contact_email
+    FROM admin_users au
+    JOIN tenants t ON t.id = au.tenant_id
+    WHERE au.is_owner = 1 AND au.email = ''
+  `).all() as { id: number; tenant_id: number; contact_email: string }[];
+  const legacyCoachEmail = (() => {
+    try {
+      const row = sqlite.prepare(`SELECT value FROM settings WHERE key = 'coachEmail'`).get() as { value?: string } | undefined;
+      return row?.value || "";
+    } catch { return ""; }
+  })();
+  const setEmail = sqlite.prepare(`UPDATE admin_users SET email = ? WHERE id = ?`);
+  for (const o of ownersNoEmail) {
+    const email = (o.contact_email || legacyCoachEmail || "").trim();
+    if (email) setEmail.run(email, o.id);
+  }
+
   // ---- 8. Drop legacy UNIQUE(start) on bookings -----------------------
   // Two reasons:
   //   - Different tenants can have bookings at the same wall-clock start.

@@ -95,21 +95,36 @@ export type AdminUser = {
   id: number;
   phone: string;
   name: string;
+  email: string;
+  givesLessons: boolean;
+  receivesEmails: boolean;
+  color: string;
   isOwner: boolean;
   createdAt: number;
   updatedAt: number;
 };
+
+const ADMIN_PALETTE = [
+  "#0ea5e9", "#f97316", "#10b981", "#a855f7", "#ec4899", "#eab308",
+  "#06b6d4", "#84cc16", "#ef4444", "#8b5cf6", "#14b8a6", "#f59e0b",
+];
 
 function rowToAdminUser(row: any): AdminUser {
   return {
     id: row.id,
     phone: row.phone,
     name: row.name,
+    email: row.email || "",
+    givesLessons: !!row.gives_lessons,
+    receivesEmails: !!row.receives_emails,
+    color: row.color || "",
     isOwner: !!row.is_owner,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 
 export function listAdminUsers(tenantId: number): AdminUser[] {
   const rows = sqlite
@@ -118,20 +133,29 @@ export function listAdminUsers(tenantId: number): AdminUser[] {
   return rows.map(rowToAdminUser);
 }
 
-export function addAdminUser(tenantId: number, input: { phone: string; name: string; password: string }): AdminUser {
+export function addAdminUser(tenantId: number, input: { phone: string; name: string; email: string; password: string; givesLessons?: boolean; receivesEmails?: boolean }): AdminUser {
   const np = normalizePhone(input.phone);
   if (!np || np.length < 7) throw new Error("Phone number is required");
+  const emailVal = (input.email || "").trim();
+  if (!emailVal) throw new Error("Email is required");
+  if (!EMAIL_RE.test(emailVal)) throw new Error("Enter a valid email address");
   if (!input.password || input.password.length < 6) throw new Error("Password must be at least 6 characters");
   const existing = sqlite.prepare(`SELECT id FROM admin_users WHERE phone=? AND tenant_id=?`).get(np, tenantId);
   if (existing) throw new Error("An admin with that phone already exists");
   const salt = randomBytes(16).toString("hex");
   const hash = hashPassword(input.password, salt);
   const now = Date.now();
+  const givesLessons = input.givesLessons ? 1 : 0;
+  const receivesEmails = input.receivesEmails ? 1 : 0;
   sqlite.prepare(
-    `INSERT INTO admin_users (tenant_id, phone, name, salt, hash, is_owner, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)`
-  ).run(tenantId, np, input.name || "", salt, hash, now, now);
-  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE phone=? AND tenant_id=?`).get(np, tenantId);
-  return rowToAdminUser(row);
+    `INSERT INTO admin_users (tenant_id, phone, name, email, salt, hash, gives_lessons, receives_emails, color, is_owner, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, '', 0, ?, ?)`
+  ).run(tenantId, np, input.name || "", emailVal, salt, hash, givesLessons, receivesEmails, now, now);
+  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE phone=? AND tenant_id=?`).get(np, tenantId) as any;
+  // Assign color from palette based on row id
+  const color = ADMIN_PALETTE[row.id % ADMIN_PALETTE.length];
+  sqlite.prepare(`UPDATE admin_users SET color=? WHERE id=?`).run(color, row.id);
+  const updatedRow = sqlite.prepare(`SELECT * FROM admin_users WHERE id=?`).get(row.id);
+  return rowToAdminUser(updatedRow);
 }
 
 export function deleteAdminUser(tenantId: number, id: number) {
@@ -139,6 +163,57 @@ export function deleteAdminUser(tenantId: number, id: number) {
   if (!row) return;
   if (row.is_owner) throw new Error("Cannot remove the owner admin");
   sqlite.prepare(`DELETE FROM admin_users WHERE id=? AND tenant_id=?`).run(id, tenantId);
+}
+
+export function updateAdminUser(
+  tenantId: number,
+  id: number,
+  patch: { name?: string; email?: string; givesLessons?: boolean; receivesEmails?: boolean; color?: string; password?: string }
+): AdminUser {
+  const row = sqlite.prepare(`SELECT * FROM admin_users WHERE id=? AND tenant_id=?`).get(id, tenantId) as any;
+  if (!row) throw new Error("Admin not found");
+
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (patch.name !== undefined) {
+    updates.push("name=?"); params.push((patch.name || "").trim());
+  }
+  if (patch.email !== undefined) {
+    const emailVal = (patch.email || "").trim();
+    if (emailVal && !EMAIL_RE.test(emailVal)) throw new Error("Enter a valid email address");
+    updates.push("email=?"); params.push(emailVal);
+  }
+  if (patch.givesLessons !== undefined) {
+    // Owner cannot have gives_lessons flipped to 0
+    const val = row.is_owner ? 1 : (patch.givesLessons ? 1 : 0);
+    updates.push("gives_lessons=?"); params.push(val);
+  }
+  if (patch.receivesEmails !== undefined) {
+    // Owner cannot have receives_emails flipped to 0
+    const val = row.is_owner ? 1 : (patch.receivesEmails ? 1 : 0);
+    updates.push("receives_emails=?"); params.push(val);
+  }
+  if (patch.color !== undefined) {
+    updates.push("color=?"); params.push(patch.color || "");
+  }
+  if (patch.password !== undefined) {
+    if (patch.password.length < 6) throw new Error("Password must be at least 6 characters");
+    const salt = randomBytes(16).toString("hex");
+    const hash = hashPassword(patch.password, salt);
+    updates.push("salt=?", "hash=?"); params.push(salt, hash);
+    // Delete all sessions for this tenant (force re-login)
+    sqlite.prepare(`DELETE FROM admin_sessions WHERE tenant_id=?`).run(tenantId);
+  }
+
+  if (updates.length > 0) {
+    updates.push("updated_at=?"); params.push(Date.now());
+    params.push(id, tenantId);
+    sqlite.prepare(`UPDATE admin_users SET ${updates.join(", ")} WHERE id=? AND tenant_id=?`).run(...params);
+  }
+
+  const updated = sqlite.prepare(`SELECT * FROM admin_users WHERE id=? AND tenant_id=?`).get(id, tenantId);
+  return rowToAdminUser(updated);
 }
 
 // --- Credential change ---
@@ -178,28 +253,30 @@ function sha256Hex(s: string): string {
 // Look up an admin user (multi-admin table) by tenant + (phone OR email).
 // We accept either so the user can recover without remembering which they
 // used. Returns the row or null.
-function findAdminForReset(tenantId: number, identifier: string): { id: number; tenant_id: number; phone: string } | null {
+function findAdminForReset(tenantId: number, identifier: string): { id: number; tenant_id: number; phone: string; email: string } | null {
   const ident = (identifier || "").trim();
   if (!ident) return null;
   // Try as phone first (digits-only match).
   const np = normalizePhone(ident);
   if (np && np.length >= 7) {
     const row = sqlite.prepare(
-      `SELECT id, tenant_id, phone FROM admin_users WHERE tenant_id=? AND phone=?`
+      `SELECT id, tenant_id, phone, email FROM admin_users WHERE tenant_id=? AND phone=?`
     ).get(tenantId, np) as any;
     if (row) return row;
   }
-  // Otherwise try as email -> look up the tenant's contact_email and match
-  // any admin whose phone is associated with that. Simpler: we look up the
-  // tenant row to find its contact_email; if it matches the identifier we
-  // pick the OWNER admin for that tenant.
+  // Try as email — match against the admin's own email column (case-insensitive).
   if (ident.includes("@")) {
+    const row = sqlite.prepare(
+      `SELECT id, tenant_id, phone, email FROM admin_users WHERE tenant_id=? AND lower(email)=lower(?)`
+    ).get(tenantId, ident) as any;
+    if (row) return row;
+    // Fallback: match the tenant's contact_email and return the owner admin.
     const tenantRow = sqlite.prepare(
       `SELECT id, contact_email FROM tenants WHERE id=?`
     ).get(tenantId) as any;
     if (tenantRow && String(tenantRow.contact_email || "").toLowerCase() === ident.toLowerCase()) {
       const owner = sqlite.prepare(
-        `SELECT id, tenant_id, phone FROM admin_users WHERE tenant_id=? AND is_owner=1 LIMIT 1`
+        `SELECT id, tenant_id, phone, email FROM admin_users WHERE tenant_id=? AND is_owner=1 LIMIT 1`
       ).get(tenantId) as any;
       if (owner) return owner;
     }
@@ -210,7 +287,7 @@ function findAdminForReset(tenantId: number, identifier: string): { id: number; 
 // Create a reset token for the given admin and return the plaintext token.
 // Invalidates any previous unused tokens for that admin (only the newest is
 // usable, so re-clicking "Forgot password" can't pile up valid tokens).
-export function createResetToken(tenantId: number, identifier: string): { token: string; adminUserId: number; phone: string } | null {
+export function createResetToken(tenantId: number, identifier: string): { token: string; adminUserId: number; phone: string; email: string } | null {
   const admin = findAdminForReset(tenantId, identifier);
   if (!admin) return null;
   // Invalidate older unused tokens for this admin.
@@ -223,7 +300,7 @@ export function createResetToken(tenantId: number, identifier: string): { token:
   sqlite.prepare(
     `INSERT INTO password_reset_tokens (tenant_id, admin_user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`
   ).run(admin.tenant_id, admin.id, tokenHash, now, now + RESET_TOKEN_TTL_MS);
-  return { token, adminUserId: admin.id, phone: admin.phone };
+  return { token, adminUserId: admin.id, phone: admin.phone, email: admin.email || "" };
 }
 
 // Consume a reset token and set a new password. Returns true on success,

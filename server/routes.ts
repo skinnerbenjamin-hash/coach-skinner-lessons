@@ -23,7 +23,7 @@ import { getAllSettings, getSetting, setSettings, sendBookingEmail, sendEmail } 
 import {
   seedDefaultAdmin, checkLogin, logout, requireAdmin, isAuthed,
   setSessionCookie, clearSessionCookie, getTokenFromReq, updateCredentials, getAdminPhone,
-  listAdminUsers, addAdminUser, deleteAdminUser, getSessionTenantId,
+  listAdminUsers, addAdminUser, updateAdminUser, deleteAdminUser, getSessionTenantId,
   createResetToken, consumeResetToken,
 } from "./auth";
 import { checkSlug, createTenantAndOwner } from "./signup";
@@ -31,6 +31,28 @@ import { insertResourceSchema, RESOURCE_CATEGORIES, insertLessonTypeSchema } fro
 
 startReminderLoop();
 seedDefaultAdmin("9079527860", "1qaz!QAZ");
+
+// Returns the list of admin emails that should receive booking notifications
+// for a tenant. Falls back to tenant.contact_email, then legacy
+// getSetting("coachEmail"), so single-admin sites that haven't migrated still
+// get email.  Always deduplicated and lowercased.
+function getBookingEmailRecipients(tenantId: number): string[] {
+  const rows = sqlite.prepare(
+    `SELECT email FROM admin_users WHERE tenant_id=? AND receives_emails=1 AND email != ''`
+  ).all(tenantId) as { email: string }[];
+  const set = new Set<string>();
+  for (const r of rows) set.add(r.email.trim().toLowerCase());
+  if (set.size === 0) {
+    const tenant = getTenantById(sqlite, tenantId);
+    const fallback = (tenant?.contact_email || "").trim().toLowerCase();
+    if (fallback) set.add(fallback);
+  }
+  if (set.size === 0) {
+    const legacy = (getSetting("coachEmail") || "").trim().toLowerCase();
+    if (legacy) set.add(legacy);
+  }
+  return Array.from(set);
+}
 
 const SLOT_MIN = 30;
 const MAX_GAP_MIN = 30;          // gaps <= this between busy blocks count as "orphan"
@@ -540,9 +562,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const proto = (req.headers["x-forwarded-proto"] as string) || "https";
         const host = req.headers.host || `${slug}.lessonspot.app`;
         const resetUrl = `${proto}://${host}/?token=${encodeURIComponent(result.token)}#/reset`;
-        // Pick the destination email: tenant contact_email is the default; if
-        // empty, fall back to the identifier when it looks like an email.
-        let to = String(tenant?.contact_email || "").trim();
+        // Pick the destination email: use the matched admin's own email first;
+        // fall back to tenant contact_email, then the identifier if it looks like an email.
+        let to = (result.email || "").trim();
+        if (!to) to = String(tenant?.contact_email || "").trim();
         if (!to && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(identifier)) to = identifier;
         if (to) {
           const name = tenant?.name || "LessonSpot";
@@ -1126,8 +1149,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
 
     // Coach notification email (fire-and-forget)
-    const coachEmail = getSetting("coachEmail");
-    if (coachEmail) {
+    const recipients = getBookingEmailRecipients(tenantId);
+    if (recipients.length > 0) {
       const summary = expanded.map(b => `• ${b.start.replace("T", " ")}`).join("\n");
       // Collect extra participants from the first booking (group bookings share participants across sessions)
       const extras = (expanded[0]?.extraParticipants || []).map(p => `${p.playerName}${p.parentName && p.parentName !== profile.parentName ? ` (parent: ${p.parentName})` : ""}`);
@@ -1140,14 +1163,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         ? `<li><b>Players (${groupSize}):</b><ul>${allPlayers.map(n => `<li>${n}</li>`).join("")}</ul></li>`
         : `<li><b>Player:</b> ${profile.playerName}</li>`;
       const subjectSuffix = groupSize > 1 ? ` +${groupSize - 1} others` : "";
-      sendBookingEmail({
-        to: coachEmail,
-        subject: `New booking: ${profile.playerName}${subjectSuffix} (${expanded.length} session${expanded.length === 1 ? "" : "s"})`,
-        text: `New softball lesson booking.\n\n${playerListText}\nBooking parent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\nNotes: ${profile.notes || "(none)"}\n\nSessions:\n${summary}\n\nThe attached .ics file will add these to your Apple Calendar.`,
-        html: `<p>New softball lesson booking.</p><ul>${playerListHtml}<li><b>Booking parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li><li><b>Notes:</b> ${profile.notes || "(none)"}</li></ul><p><b>Sessions:</b></p><pre>${summary}</pre><p>The attached .ics file will add these to your Apple Calendar.</p>`,
-        icsContent: ics,
-        icsFilename: `booking-${bookingGroup.slice(0, 8)}.ics`,
-      }).catch(e => console.error("coach email send error:", e));
+      for (const recipient of recipients) {
+        sendBookingEmail({
+          to: recipient,
+          subject: `New booking: ${profile.playerName}${subjectSuffix} (${expanded.length} session${expanded.length === 1 ? "" : "s"})`,
+          text: `New softball lesson booking.\n\n${playerListText}\nBooking parent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\nNotes: ${profile.notes || "(none)"}\n\nSessions:\n${summary}\n\nThe attached .ics file will add these to your Apple Calendar.`,
+          html: `<p>New softball lesson booking.</p><ul>${playerListHtml}<li><b>Booking parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li><li><b>Notes:</b> ${profile.notes || "(none)"}</li></ul><p><b>Sessions:</b></p><pre>${summary}</pre><p>The attached .ics file will add these to your Apple Calendar.</p>`,
+          icsContent: ics,
+          icsFilename: `booking-${bookingGroup.slice(0, 8)}.ics`,
+        }).catch(e => console.error("coach email send error:", e));
+      }
     }
 
     // Parent confirmation — channel decided by setting
@@ -1294,19 +1319,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Fire-and-forget notifications
     const coachName = getSetting("coachName") || "Coach Skinner";
-    const coachEmail = getSetting("coachEmail");
     const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
     const dateLong = formatDateLong(isoDate(b.start));
     const timeStr = formatTime(b.start.split("T")[1]);
     const whoCancelled = isAdmin ? coachName : (profile?.parentName || "The parent");
 
-    if (coachEmail && !isAdmin && profile) {
-      sendEmail({
-        to: coachEmail,
-        subject: `Booking CANCELLED: ${profile.playerName} — ${dateLong} ${timeStr}`,
-        text: `${profile.parentName} cancelled a lesson.\n\nPlayer: ${profile.playerName}\nParent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\n\nWas scheduled: ${dateLong} at ${timeStr}\n\nThe slot is now open again.`,
-        html: `<p><b>${profile.parentName}</b> cancelled a lesson.</p><ul><li><b>Player:</b> ${profile.playerName}</li><li><b>Parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li></ul><p><b>Was scheduled:</b> ${dateLong} at ${timeStr}</p><p>The slot is now open again.</p>`,
-      }).catch(e => console.error("coach cancel email error:", e));
+    const cancelRecipients = getBookingEmailRecipients(tenantId);
+    if (cancelRecipients.length > 0 && !isAdmin && profile) {
+      for (const recipient of cancelRecipients) {
+        sendEmail({
+          to: recipient,
+          subject: `Booking CANCELLED: ${profile.playerName} — ${dateLong} ${timeStr}`,
+          text: `${profile.parentName} cancelled a lesson.\n\nPlayer: ${profile.playerName}\nParent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\n\nWas scheduled: ${dateLong} at ${timeStr}\n\nThe slot is now open again.`,
+          html: `<p><b>${profile.parentName}</b> cancelled a lesson.</p><ul><li><b>Player:</b> ${profile.playerName}</li><li><b>Parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li></ul><p><b>Was scheduled:</b> ${dateLong} at ${timeStr}</p><p>The slot is now open again.</p>`,
+        }).catch(e => console.error("coach cancel email error:", e));
+      }
     }
 
     if (profile && profile.email) {
@@ -1475,7 +1502,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Fire-and-forget notifications
     const coachName = getSetting("coachName") || "Coach Skinner";
-    const coachEmail = getSetting("coachEmail");
     const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
     const oldDateLong = formatDateLong(isoDate(oldStart));
     const oldTime = formatTime(oldStart.split("T")[1]);
@@ -1483,13 +1509,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const newTime = formatTime(newStart.split("T")[1]);
     const whoChanged = isAdmin ? coachName : (profile?.parentName || "The parent");
 
-    if (coachEmail && !isAdmin && profile) {
-      sendEmail({
-        to: coachEmail,
-        subject: `Booking RESCHEDULED: ${profile.playerName} — now ${newDateLong} ${newTime}`,
-        text: `${profile.parentName} rescheduled a lesson.\n\nPlayer: ${profile.playerName}\nParent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\n\nOld: ${oldDateLong} at ${oldTime}\nNew: ${newDateLong} at ${newTime}`,
-        html: `<p><b>${profile.parentName}</b> rescheduled a lesson.</p><ul><li><b>Player:</b> ${profile.playerName}</li><li><b>Parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li></ul><p><b>Old:</b> ${oldDateLong} at ${oldTime}<br><b>New:</b> ${newDateLong} at ${newTime}</p>`,
-      }).catch(e => console.error("coach reschedule email error:", e));
+    const rescheduleRecipients = getBookingEmailRecipients(tenantId);
+    if (rescheduleRecipients.length > 0 && !isAdmin && profile) {
+      for (const recipient of rescheduleRecipients) {
+        sendEmail({
+          to: recipient,
+          subject: `Booking RESCHEDULED: ${profile.playerName} — now ${newDateLong} ${newTime}`,
+          text: `${profile.parentName} rescheduled a lesson.\n\nPlayer: ${profile.playerName}\nParent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\n\nOld: ${oldDateLong} at ${oldTime}\nNew: ${newDateLong} at ${newTime}`,
+          html: `<p><b>${profile.parentName}</b> rescheduled a lesson.</p><ul><li><b>Player:</b> ${profile.playerName}</li><li><b>Parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li></ul><p><b>Old:</b> ${oldDateLong} at ${oldTime}<br><b>New:</b> ${newDateLong} at ${newTime}</p>`,
+        }).catch(e => console.error("coach reschedule email error:", e));
+      }
     }
 
     if (profile && profile.email) {
@@ -1812,7 +1841,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // Fire-and-forget email alert to the OTHER party
     const coachName = getSetting("coachName") || "Coach Skinner";
-    const coachEmail = getSetting("coachEmail");
     const siteBase = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "");
     const manageUrl = siteBase + "/#/my-appointments";
     const brand = "#1f5a37";
@@ -1853,20 +1881,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               <p style="margin:24px 0 0;color:#888;font-size:13px">You're receiving this because ${coachName} posted a coaching note for ${playerLabel}.</p>
             </div>`,
           });
-        } else if (author === "parent" && coachEmail) {
-          // Notify the coach
-          await sendEmail({
-            to: coachEmail,
-            subject: `New note from ${profile.parentName || "a parent"} about ${playerLabel}`,
-            text: `${profile.parentName || "A parent"} posted a new note about ${playerLabel}:\n\n${text || "(no message)"}${mediaBlockText}\n\nReply at: ${manageUrl}`,
-            html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
+        } else if (author === "parent") {
+          // Notify all admin recipients
+          const noteRecipients = getBookingEmailRecipients(tenantId);
+          for (const noteRecipient of noteRecipients) {
+            await sendEmail({
+              to: noteRecipient,
+              subject: `New note from ${profile.parentName || "a parent"} about ${playerLabel}`,
+              text: `${profile.parentName || "A parent"} posted a new note about ${playerLabel}:\n\n${text || "(no message)"}${mediaBlockText}\n\nReply at: ${manageUrl}`,
+              html: `<div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#111">
               <h2 style="color:${brand};margin:0 0 8px">New note from ${profile.parentName || "a parent"}</h2>
               <p style="margin:0 0 16px;color:#555">About <strong>${playerLabel}</strong></p>
               ${safeText ? `<div style="background:#f7f8f6;border-left:4px solid ${brand};padding:14px 16px;border-radius:6px;white-space:pre-wrap">${safeText}</div>` : ""}
               ${mediaBlockHtml}
               <p style="margin:20px 0 0"><a href="${manageUrl}" style="background:${brand};color:#fff;text-decoration:none;padding:10px 18px;border-radius:6px;display:inline-block">Open admin</a></p>
             </div>`,
-          });
+            });
+          }
         }
       } catch (e) { console.error("note email failed:", e); }
     })();
@@ -2183,11 +2214,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     try {
       const phone = String(req.body?.phone || "");
       const name = String(req.body?.name || "");
+      const email = String(req.body?.email || "").trim();
       const password = String(req.body?.password || "");
-      const user = addAdminUser(tenantId, { phone, name, password });
+      if (!email) return res.status(400).json({ error: "Email is required" });
+      const givesLessons = !!req.body?.givesLessons;
+      const receivesEmails = !!req.body?.receivesEmails;
+      const user = addAdminUser(tenantId, { phone, name, email, password, givesLessons, receivesEmails });
       res.json({ admin: user });
     } catch (e: any) {
       res.status(400).json({ error: e?.message || "Couldn't add admin" });
+    }
+  });
+
+  app.patch("/api/admin/team/:id", requireAdmin, (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    try {
+      const id = Number(req.params.id);
+      const patch: { name?: string; email?: string; givesLessons?: boolean; receivesEmails?: boolean; color?: string; password?: string } = {};
+      if (req.body?.name !== undefined) patch.name = String(req.body.name);
+      if (req.body?.email !== undefined) patch.email = String(req.body.email);
+      if (req.body?.givesLessons !== undefined) patch.givesLessons = !!req.body.givesLessons;
+      if (req.body?.receivesEmails !== undefined) patch.receivesEmails = !!req.body.receivesEmails;
+      if (req.body?.color !== undefined) patch.color = String(req.body.color);
+      if (req.body?.password !== undefined) patch.password = String(req.body.password);
+      const user = updateAdminUser(tenantId, id, patch);
+      res.json({ admin: user });
+    } catch (e: any) {
+      res.status(400).json({ error: e?.message || "Couldn't update admin" });
     }
   });
 

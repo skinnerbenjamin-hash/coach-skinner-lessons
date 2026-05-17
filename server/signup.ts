@@ -22,6 +22,11 @@
 import Database from "better-sqlite3";
 import { randomBytes, scryptSync } from "node:crypto";
 
+const SIGNUP_PALETTE = [
+  "#0ea5e9", "#f97316", "#10b981", "#a855f7", "#ec4899", "#eab308",
+  "#06b6d4", "#84cc16", "#ef4444", "#8b5cf6", "#14b8a6", "#f59e0b",
+];
+
 const sqlite = new Database(process.env.DB_PATH || "data.db");
 
 // We deliberately DO NOT auto-seed sport-specific lesson types or resource
@@ -102,6 +107,9 @@ export function createTenantAndOwner(input: SignupInput): SignupResult {
   if (!slugCheck.available) {
     return { ok: false, error: slugCheck.reason, field: "slug" };
   }
+  if (!email) {
+    return { ok: false, error: "Email is required", field: "email" };
+  }
   if (!EMAIL_RE.test(email)) {
     return { ok: false, error: "Enter a valid email", field: "email" };
   }
@@ -144,10 +152,13 @@ export function createTenantAndOwner(input: SignupInput): SignupResult {
     // 2. Owner admin user.
     const salt = randomBytes(16).toString("hex");
     const hash = hashPassword(password, salt);
-    sqlite.prepare(`
-      INSERT INTO admin_users (tenant_id, phone, name, salt, hash, is_owner, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, 1, ?, ?)
-    `).run(tenantId, phone, name, salt, hash, now, now);
+    const ownerResult = sqlite.prepare(`
+      INSERT INTO admin_users (tenant_id, phone, name, email, salt, hash, gives_lessons, receives_emails, color, is_owner, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, 1, '', 1, ?, ?)
+    `).run(tenantId, phone, name, email, salt, hash, now, now);
+    const ownerId = Number(ownerResult.lastInsertRowid);
+    const ownerColor = SIGNUP_PALETTE[ownerId % SIGNUP_PALETTE.length];
+    sqlite.prepare(`UPDATE admin_users SET color=? WHERE id=?`).run(ownerColor, ownerId);
 
     // 3. Seed a minimal, neutral set of lesson types.  Same for every sport.
     //    The coach renames/adds/removes from the Admin UI -- we just want the

@@ -1914,7 +1914,103 @@ function EditResourceDialog({ resource }: { resource: Resource }) {
 
 // ===== Team / multi-admin =====
 
-type AdminUser = { id: number; phone: string; name: string; isOwner: boolean; createdAt: number };
+type AdminUser = {
+  id: number;
+  phone: string;
+  name: string;
+  email: string;
+  givesLessons: boolean;
+  receivesEmails: boolean;
+  color: string;
+  isOwner: boolean;
+  createdAt: number;
+};
+
+function EditAdminDialog({ admin, onClose, onSaved }: { admin: AdminUser; onClose: () => void; onSaved: () => void }) {
+  const { toast } = useToast();
+  const [name, setName] = useState(admin.name);
+  const [email, setEmail] = useState(admin.email);
+  const [password, setPassword] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [givesLessons, setGivesLessons] = useState(admin.givesLessons);
+  const [receivesEmails, setReceivesEmails] = useState(admin.receivesEmails);
+
+  const save = useMutation({
+    mutationFn: async () => {
+      const body: Record<string, any> = { name: name.trim(), email: email.trim(), givesLessons, receivesEmails };
+      if (password) body.password = password;
+      const r = await apiRequest("PATCH", `/api/admin/team/${admin.id}`, body);
+      return r.json();
+    },
+    onSuccess: () => { onSaved(); toast({ title: "Admin updated" }); },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't update admin", description: String(e?.message || "").replace(/^\d+:\s*/, "") }),
+  });
+
+  return (
+    <DialogContent>
+      <DialogHeader>
+        <DialogTitle>Edit {admin.name || admin.phone}</DialogTitle>
+        <DialogDescription>Update this admin's details. Leave password blank to keep it unchanged.</DialogDescription>
+      </DialogHeader>
+      <div className="space-y-3 py-2">
+        <div>
+          <Label>Name</Label>
+          <Input value={name} onChange={e => setName(e.target.value)} data-testid="input-edit-admin-name" />
+        </div>
+        <div>
+          <Label>Email *</Label>
+          <Input type="email" value={email} onChange={e => setEmail(e.target.value)} data-testid="input-edit-admin-email" />
+        </div>
+        <div>
+          <Label>New password (leave blank to keep current)</Label>
+          <div className="relative">
+            <Input
+              type={showPw ? "text" : "password"}
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              placeholder="min 6 characters"
+              data-testid="input-edit-admin-password"
+            />
+            <button type="button" onClick={() => setShowPw(!showPw)} className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground" aria-label="Toggle password visibility">
+              {showPw ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+            </button>
+          </div>
+        </div>
+        <div className="flex items-center gap-6">
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={givesLessons}
+              onChange={e => { if (!admin.isOwner) setGivesLessons(e.target.checked); }}
+              disabled={admin.isOwner}
+              className="h-4 w-4 rounded"
+              data-testid="checkbox-gives-lessons"
+            />
+            <span className="text-sm">Gives lessons</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={receivesEmails}
+              onChange={e => { if (!admin.isOwner) setReceivesEmails(e.target.checked); }}
+              disabled={admin.isOwner}
+              className="h-4 w-4 rounded"
+              data-testid="checkbox-receives-emails"
+            />
+            <span className="text-sm">Receives booking emails</span>
+          </label>
+        </div>
+        {admin.isOwner && <p className="text-xs text-muted-foreground">Owner must give lessons and receive emails.</p>}
+      </div>
+      <DialogFooter>
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button onClick={() => save.mutate()} disabled={save.isPending} data-testid="button-save-admin">
+          {save.isPending ? "Saving…" : "Save changes"}
+        </Button>
+      </DialogFooter>
+    </DialogContent>
+  );
+}
 
 function TeamPanel() {
   const qc = useQueryClient();
@@ -1922,16 +2018,20 @@ function TeamPanel() {
   const { data, isLoading } = useQuery<{ admins: AdminUser[] }>({ queryKey: ["/api/admin/team"] });
   const [phone, setPhone] = useState("");
   const [name, setName] = useState("");
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPw, setShowPw] = useState(false);
+  const [givesLessons, setGivesLessons] = useState(false);
+  const [receivesEmails, setReceivesEmails] = useState(false);
+  const [editingAdmin, setEditingAdmin] = useState<AdminUser | null>(null);
 
   const add = useMutation({
     mutationFn: async () => {
-      const r = await apiRequest("POST", "/api/admin/team", { phone: phone.trim(), name: name.trim(), password });
+      const r = await apiRequest("POST", "/api/admin/team", { phone: phone.trim(), name: name.trim(), email: email.trim(), password, givesLessons, receivesEmails });
       return r.json();
     },
     onSuccess: () => {
-      setPhone(""); setName(""); setPassword("");
+      setPhone(""); setName(""); setEmail(""); setPassword(""); setGivesLessons(false); setReceivesEmails(false);
       qc.invalidateQueries({ queryKey: ["/api/admin/team"] });
       toast({ title: "Admin added", description: "They can now sign in at /#/admin with their phone and password." });
     },
@@ -1948,9 +2048,15 @@ function TeamPanel() {
   });
 
   const admins = data?.admins ?? [];
+  const missingEmail = admins.filter(a => !a.email);
 
   return (
     <div className="space-y-6 mt-4">
+      {missingEmail.length > 0 && (
+        <div className="bg-red-50 border border-red-300 text-red-800 rounded-md p-3 text-sm" data-testid="banner-missing-email">
+          <strong>{missingEmail.length} admin{missingEmail.length === 1 ? "" : "s"} {missingEmail.length === 1 ? "is" : "are"} missing an email address.</strong> They can't receive booking notifications or reset their password until you add one.
+        </div>
+      )}
       <Card>
         <CardContent className="p-5 space-y-3">
           <h2 className="text-base font-semibold flex items-center gap-2">
@@ -1959,10 +2065,14 @@ function TeamPanel() {
           <p className="text-sm text-muted-foreground">
             Anyone you add here can sign in at /#/admin with the phone and password you set and will have full admin access. They cannot remove the owner account.
           </p>
-          <div className="grid sm:grid-cols-3 gap-3">
+          <div className="grid sm:grid-cols-2 gap-3">
             <div>
               <Label>Name</Label>
               <Input value={name} onChange={e => setName(e.target.value)} placeholder="Assistant coach" data-testid="input-admin-name" />
+            </div>
+            <div>
+              <Label>Email *</Label>
+              <Input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="coach@example.com" data-testid="input-admin-email" />
             </div>
             <div>
               <Label>Phone *</Label>
@@ -1989,10 +2099,20 @@ function TeamPanel() {
               </div>
             </div>
           </div>
+          <div className="flex items-center gap-6">
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={givesLessons} onChange={e => setGivesLessons(e.target.checked)} className="h-4 w-4 rounded" data-testid="checkbox-add-gives-lessons" />
+              <span className="text-sm">Gives lessons</span>
+            </label>
+            <label className="flex items-center gap-2 cursor-pointer select-none">
+              <input type="checkbox" checked={receivesEmails} onChange={e => setReceivesEmails(e.target.checked)} className="h-4 w-4 rounded" data-testid="checkbox-add-receives-emails" />
+              <span className="text-sm">Receives booking emails</span>
+            </label>
+          </div>
           <div className="flex justify-end">
             <Button
               onClick={() => add.mutate()}
-              disabled={!phone.trim() || !password || add.isPending}
+              disabled={!phone.trim() || !email.trim() || !password || add.isPending}
               data-testid="button-add-admin"
             >
               {add.isPending ? "Adding…" : "Add admin"}
@@ -2008,25 +2128,51 @@ function TeamPanel() {
           {admins.map(a => (
             <div key={a.id} className="border rounded-md p-3 flex items-center justify-between" data-testid={`row-admin-${a.id}`}>
               <div className="flex items-center gap-3">
-                {a.isOwner ? <Crown className="h-4 w-4 text-primary" /> : <ShieldCheck className="h-4 w-4 text-muted-foreground" />}
+                {/* Color swatch */}
+                {a.color ? (
+                  <span className="inline-block rounded-full border" style={{ width: 12, height: 12, background: a.color, flexShrink: 0 }} />
+                ) : (
+                  a.isOwner ? <Crown className="h-4 w-4 text-primary" /> : <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+                )}
                 <div>
-                  <div className="font-medium">
+                  <div className="font-medium flex flex-wrap items-center gap-1">
                     {a.name || "(no name)"}
-                    {a.isOwner && <Badge variant="secondary" className="ml-2 text-[10px]">Owner</Badge>}
+                    {a.isOwner && <Badge variant="secondary" className="text-[10px]">Owner</Badge>}
+                    {a.givesLessons && <Badge variant="outline" className="text-[10px]">Gives lessons</Badge>}
+                    {a.receivesEmails && <Badge variant="outline" className="text-[10px]">Receives emails</Badge>}
                   </div>
-                  <div className="text-xs text-muted-foreground">{formatPhone(a.phone)} · added {new Date(a.createdAt).toLocaleDateString()}</div>
+                  <div className="text-xs text-muted-foreground">
+                    {a.email && <span className="mr-2">{a.email}</span>}
+                    {formatPhone(a.phone)} · added {new Date(a.createdAt).toLocaleDateString()}
+                  </div>
                 </div>
               </div>
-              {!a.isOwner && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() => { if (confirm(`Remove ${a.name || a.phone} as admin?`)) del.mutate(a.id); }}
-                  data-testid={`button-delete-admin-${a.id}`}
-                >
-                  <Trash2 className="h-4 w-4" />
-                </Button>
-              )}
+              <div className="flex items-center gap-1">
+                <Dialog open={editingAdmin?.id === a.id} onOpenChange={open => { if (!open) setEditingAdmin(null); }}>
+                  <DialogTrigger asChild>
+                    <Button variant="ghost" size="sm" onClick={() => setEditingAdmin(a)} data-testid={`button-edit-admin-${a.id}`}>
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </DialogTrigger>
+                  {editingAdmin?.id === a.id && (
+                    <EditAdminDialog
+                      admin={a}
+                      onClose={() => setEditingAdmin(null)}
+                      onSaved={() => { setEditingAdmin(null); qc.invalidateQueries({ queryKey: ["/api/admin/team"] }); }}
+                    />
+                  )}
+                </Dialog>
+                {!a.isOwner && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => { if (confirm(`Remove ${a.name || a.phone} as admin?`)) del.mutate(a.id); }}
+                    data-testid={`button-delete-admin-${a.id}`}
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                )}
+              </div>
             </div>
           ))}
         </div>
