@@ -24,6 +24,8 @@ import {
   DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
 import { useTenant, useTenantLabels } from "@/hooks/use-tenant";
+import { useCoaches } from "@/hooks/use-coaches";
+import type { Coach } from "@/hooks/use-coaches";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -60,7 +62,7 @@ type LessonTypesResponse = { lessonTypes: LessonType[] };
 // One extra participant beyond the primary booker.
 type ParticipantDraft = { playerName: string; parentName: string; notes: string };
 
-type Step = "profile" | "pick" | "review" | "done";
+type Step = "coach" | "profile" | "pick" | "review" | "done";
 
 export default function Book() {
   const { toast } = useToast();
@@ -71,6 +73,24 @@ export default function Book() {
   // tenant has that in their business name.
   const businessName = tenantInfo?.name || "the instructor";
   const [step, setStep] = useState<Step>("profile");
+
+  // Coach selection
+  const { coaches, isLoading: coachesLoading } = useCoaches();
+  const [selectedCoachId, setSelectedCoachId] = useState<number | null>(null);
+  // Auto-select when exactly 1 coach (solo path — skip picker entirely).
+  // When 2+ coaches exist, redirect to the "coach" step on first load.
+  useEffect(() => {
+    if (coachesLoading) return;
+    if (coaches.length === 1 && selectedCoachId === null) {
+      setSelectedCoachId(coaches[0].id);
+    } else if (coaches.length >= 2 && selectedCoachId === null && step === "profile") {
+      setStep("coach");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coaches.length, coachesLoading]);
+  const selectedCoach: Coach | null = coaches.find(c => c.id === selectedCoachId) ?? null;
+  // Whether to show coach picker UI (2+ coaches)
+  const showCoachPicker = coaches.length >= 2;
 
   // profile
   const [phone, setPhone] = useState("");
@@ -96,13 +116,17 @@ export default function Book() {
   const weekEnd = useMemo(() => addDays(weekStart, 6), [weekStart]);
 
   // lesson types (per tenant) — drives picker + group booking participant UI
+  // Scoped to the selected coach when available.
   const { data: lessonTypesData } = useQuery<LessonTypesResponse>({
-    queryKey: ["/api/lesson-types"],
+    queryKey: ["/api/lesson-types", selectedCoachId],
     queryFn: async () => {
-      const r = await apiRequest("GET", "/api/lesson-types");
+      const coachParam = selectedCoachId ? `?coachId=${selectedCoachId}` : "";
+      const r = await apiRequest("GET", `/api/lesson-types${coachParam}`);
       return r.json();
     },
     staleTime: 60_000,
+    // Don't fetch until coach is resolved (or we know there are 0 coaches)
+    enabled: !coachesLoading,
   });
   const lessonTypes = lessonTypesData?.lessonTypes ?? [];
   // Show the picker only when meaningful — multiple types OR any group lesson.
@@ -141,14 +165,16 @@ export default function Book() {
 
   // fetch availability — includes selectedLessonTypeId so server can filter
   // slots by window mode (solo/group/both). Without a selection, server returns
-  // all slots (admin view).
+  // all slots (admin view). Scoped to the selected coach.
   const { data: slotsData, isLoading: slotsLoading } = useQuery<SlotsResponse>({
-    queryKey: ["/api/slots", weekStart, weekEnd, selectedLessonTypeId],
+    queryKey: ["/api/slots", weekStart, weekEnd, selectedLessonTypeId, selectedCoachId],
     queryFn: async () => {
       const ltParam = selectedLessonTypeId ? `&lessonTypeId=${selectedLessonTypeId}` : "";
-      const r = await apiRequest("GET", `/api/slots?start=${weekStart}&end=${weekEnd}${ltParam}`);
+      const coachParam = selectedCoachId ? `&coachId=${selectedCoachId}` : "";
+      const r = await apiRequest("GET", `/api/slots?start=${weekStart}&end=${weekEnd}${ltParam}${coachParam}`);
       return r.json();
     },
+    enabled: selectedCoachId !== null,
   });
 
   // When the lesson type changes, drop any previously-selected slots so the
@@ -286,6 +312,7 @@ export default function Book() {
         email: email.trim(),
         parentName, playerName, notes,
         lessonTypeId: selectedLessonTypeId ?? undefined,
+        coachId: selectedCoachId ?? undefined,
         // Filter out empty participant rows; server requires playerName + parentName
         participants: participants
           .filter(p => p.playerName.trim() && p.parentName.trim())
@@ -390,7 +417,46 @@ export default function Book() {
         </div>
       )}
 
-      <Stepper step={step} />
+      <Stepper step={step} showCoachStep={showCoachPicker} />
+
+      {/* Coach picker step — shown when 2+ coaches give lessons */}
+      {step === "coach" && showCoachPicker && (
+        <div className="mt-6 space-y-4">
+          <h2 className="text-lg font-semibold">Choose your coach</h2>
+          <p className="text-sm text-muted-foreground">Pick who you'd like to book a lesson with.</p>
+          <div className="grid gap-4 sm:grid-cols-2">
+            {coaches.map(coach => (
+              <button
+                key={coach.id}
+                className="text-left border rounded-xl p-4 hover:bg-muted/50 transition-colors focus:outline-none focus:ring-2 focus:ring-primary"
+                onClick={() => {
+                  setSelectedCoachId(coach.id);
+                  setSelectedLessonTypeId(null);
+                  setSelected(new Set());
+                  setStep("profile");
+                }}
+              >
+                <div className="flex items-center gap-3">
+                  <div
+                    className="h-10 w-10 rounded-full flex items-center justify-center text-white font-bold text-sm shrink-0"
+                    style={{ background: coach.color || "#6366f1" }}
+                  >
+                    {(coach.name || "C").trim().split(/\s+/).map(p => p[0]).join("").toUpperCase().slice(0, 2)}
+                  </div>
+                  <span className="font-medium">{coach.name || "Coach"}</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* 0 coaches edge case */}
+      {!coachesLoading && coaches.length === 0 && step !== "done" && (
+        <div className="mt-6 rounded-xl border bg-muted/40 p-6 text-center">
+          <p className="text-sm text-muted-foreground">This site isn't accepting bookings yet. Please contact the owner.</p>
+        </div>
+      )}
 
       {step === "profile" && (
         <>
@@ -567,6 +633,31 @@ export default function Book() {
 
       {step === "pick" && (
         <div className="mt-6 space-y-4">
+          {/* Coach indicator when 2+ coaches — shows who's selected with change link */}
+          {showCoachPicker && selectedCoach && (
+            <div className="flex items-center justify-between rounded-lg bg-muted/40 border px-4 py-2 text-sm">
+              <span>
+                Booking with{" "}
+                <span
+                  className="font-semibold"
+                  style={{ color: selectedCoach.color || undefined }}
+                >
+                  {selectedCoach.name || "Coach"}
+                </span>
+              </span>
+              <button
+                className="text-primary underline text-xs ml-2"
+                onClick={() => {
+                  setSelectedCoachId(null);
+                  setSelectedLessonTypeId(null);
+                  setSelected(new Set());
+                  setStep("coach");
+                }}
+              >
+                Change coach
+              </button>
+            </div>
+          )}
           {showLessonTypePicker && (
             <Card>
               <CardContent className="p-5 space-y-3">
@@ -1075,13 +1166,16 @@ export default function Book() {
   );
 }
 
-function Stepper({ step }: { step: Step }) {
-  const steps: { id: Step; label: string }[] = [
+function Stepper({ step, showCoachStep }: { step: Step; showCoachStep?: boolean }) {
+  const baseSteps: { id: Step; label: string }[] = [
     { id: "profile", label: "Your info" },
     { id: "pick", label: "Pick times" },
     { id: "review", label: "Review" },
     { id: "done", label: "Done" },
   ];
+  const steps = showCoachStep
+    ? [{ id: "coach" as Step, label: "Coach" }, ...baseSteps]
+    : baseSteps;
   const idx = steps.findIndex(s => s.id === step);
   return (
     <ol className="flex items-center gap-2 text-xs font-medium">

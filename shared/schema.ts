@@ -68,6 +68,7 @@ export type Tenant = typeof tenants.$inferSelect;
 export const lessonTypes = sqliteTable("lesson_types", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   tenantId: integer("tenant_id").notNull(),
+  adminUserId: integer("admin_user_id"),
   name: text("name").notNull(),
   durationMin: integer("duration_min").notNull(),
   capacity: integer("capacity").notNull().default(1),
@@ -94,6 +95,7 @@ export type LessonType = typeof lessonTypes.$inferSelect;
 export const availability = sqliteTable("availability", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   tenantId: integer("tenant_id").notNull(),
+  adminUserId: integer("admin_user_id"),
   dayOfWeek: integer("day_of_week").notNull(),
   startTime: text("start_time").notNull(),
   endTime: text("end_time").notNull(),
@@ -136,6 +138,7 @@ export type Profile = typeof profiles.$inferSelect;
 export const bookings = sqliteTable("bookings", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   tenantId: integer("tenant_id").notNull(),
+  adminUserId: integer("admin_user_id"),
   start: text("start").notNull(),
   profileId: integer("profile_id").notNull(),
   lessonTypeId: integer("lesson_type_id"),
@@ -150,6 +153,7 @@ export type Booking = typeof bookings.$inferSelect;
 export const dateOverrides = sqliteTable("date_overrides", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   tenantId: integer("tenant_id").notNull(),
+  adminUserId: integer("admin_user_id"),
   date: text("date").notNull(),
   type: text("type").notNull(),
   startTime: text("start_time"),
@@ -396,6 +400,9 @@ export type BookingWithProfile = Booking & {
   email: string;
   notes: string;
   photoPath: string;
+  // Denormalized coach info for admin UI color-coding (Stage 2B)
+  adminColor?: string;
+  adminName?: string;
   // Other people in the same booking group (siblings/friends) beyond the
   // primary booker. Empty array for solo bookings. Used by admin UI to show
   // "+ Sarah, + Maya" badges.

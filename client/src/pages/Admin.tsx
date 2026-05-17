@@ -25,9 +25,14 @@ type Booking = {
   profileId: number;
   parentName: string; playerName: string; phone: string; email: string; notes: string;
   photoPath: string;
+  // Stage 2B: assigned coach info (denormalized)
+  adminUserId?: number | null;
+  adminColor?: string | null;
+  adminName?: string | null;
   // Phase 1.5: extra participants for group bookings (siblings/friends).
   extraParticipants?: { profileId: number; parentName: string; playerName: string }[];
 };
+type AdminCoach = { id: number; name: string; color: string };
 type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; mediaType: "image" | "video" | "link" | null; mediaPath: string | null; mediaUrl: string | null; createdAt: number };
 
 function initialsFor(name: string): string {
@@ -407,6 +412,10 @@ function BookingsPanel() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { data, isLoading } = useQuery<{ bookings: Booking[] }>({ queryKey: ["/api/bookings"] });
+  // Load coaches so we can show/hide color stripes (only when 2+ lesson-givers)
+  const { data: coachesData } = useQuery<AdminCoach[]>({ queryKey: ["/api/coaches"], staleTime: 60_000 });
+  const allCoaches: AdminCoach[] = coachesData ?? [];
+  const showCoachStripe = allCoaches.length >= 2;
   const del = useMutation({
     mutationFn: async (id: number) => { await apiRequest("DELETE", `/api/bookings/${id}?admin=1`); },
     onSuccess: () => { qc.invalidateQueries({ queryKey: ["/api/bookings"] }); toast({ title: "Cancelled" }); },
@@ -421,6 +430,75 @@ function BookingsPanel() {
   const past = (data?.bookings ?? []).filter(b => b.start < todayISO() + "T00:00")
     .sort((a, b) => b.start.localeCompare(a.start)).slice(0, 50);
 
+  function BookingRow({ b, dimmed }: { b: Booking; dimmed?: boolean }) {
+    const coachColor = b.adminColor || "";
+    const coachName = b.adminName || "";
+    return (
+      <div
+        className={`border rounded-md flex items-stretch overflow-hidden${dimmed ? " opacity-70" : ""}`}
+        data-testid={`row-admin-booking-${b.id}`}
+      >
+        {/* Color stripe for assigned coach — only shown when 2+ coaches */}
+        {showCoachStripe && coachColor && (
+          <div className="w-1 flex-shrink-0" style={{ background: coachColor }} />
+        )}
+        <div className="flex items-center justify-between gap-3 p-3 w-full">
+          <div className="flex items-center gap-3 min-w-0">
+            <Avatar className="h-10 w-10 flex-shrink-0">
+              {b.photoPath ? <AvatarImage src={b.photoPath} alt={b.playerName} /> : null}
+              <AvatarFallback className="text-xs">{initialsFor(b.playerName)}</AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+              <div className="font-medium">
+                {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
+              </div>
+              <div className="text-sm text-muted-foreground">
+                <button
+                  type="button"
+                  className="font-medium text-foreground underline-offset-2 hover:underline"
+                  onClick={() => openNotesFor(b.profileId)}
+                  data-testid={`button-open-notes-${b.profileId}`}
+                >
+                  {b.playerName}
+                </button>
+                {" "}· {b.parentName} · {formatPhone(b.phone)}
+                {showCoachStripe && coachName && (
+                  <span
+                    className="ml-1 text-xs font-medium"
+                    style={{ color: coachColor || undefined }}
+                  >
+                    · {coachName}
+                  </span>
+                )}
+                {b.notes && <span> · “{b.notes}”</span>}
+              </div>
+              {b.extraParticipants && b.extraParticipants.length > 0 && (
+                <div className="mt-1 flex flex-wrap gap-1" data-testid={`text-extra-participants-${b.id}`}>
+                  {b.extraParticipants.map(p => (
+                    <Badge key={p.profileId} variant="secondary" className="text-xs">
+                      + {p.playerName}
+                    </Badge>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          {dimmed ? (
+            <Badge variant="outline">Done</Badge>
+          ) : (
+            <Button
+              variant="ghost" size="sm"
+              onClick={() => del.mutate(b.id)}
+              data-testid={`button-admin-cancel-${b.id}`}
+            >
+              <Trash2 className="h-4 w-4 mr-1" /> Cancel
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 mt-4">
       <div className="flex justify-end">
@@ -432,67 +510,14 @@ function BookingsPanel() {
           <p className="text-sm text-muted-foreground">No upcoming bookings.</p>
         )}
         <div className="space-y-2">
-          {upcoming.map(b => (
-            <div key={b.id} className="border rounded-md p-3 flex items-center justify-between gap-3" data-testid={`row-admin-booking-${b.id}`}>
-              <div className="flex items-center gap-3 min-w-0">
-                <Avatar className="h-10 w-10 flex-shrink-0">
-                  {b.photoPath ? <AvatarImage src={b.photoPath} alt={b.playerName} /> : null}
-                  <AvatarFallback className="text-xs">{initialsFor(b.playerName)}</AvatarFallback>
-                </Avatar>
-                <div className="min-w-0">
-                  <div className="font-medium">
-                    {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
-                  </div>
-                  <div className="text-sm text-muted-foreground">
-                    <button
-                      type="button"
-                      className="font-medium text-foreground underline-offset-2 hover:underline"
-                      onClick={() => openNotesFor(b.profileId)}
-                      data-testid={`button-open-notes-${b.profileId}`}
-                    >
-                      {b.playerName}
-                    </button>
-                    {" "}· {b.parentName} · {formatPhone(b.phone)}
-                    {b.notes && <span> · “{b.notes}”</span>}
-                  </div>
-                  {b.extraParticipants && b.extraParticipants.length > 0 && (
-                    <div className="mt-1 flex flex-wrap gap-1" data-testid={`text-extra-participants-${b.id}`}>
-                      {b.extraParticipants.map(p => (
-                        <Badge key={p.profileId} variant="secondary" className="text-xs">
-                          + {p.playerName}
-                        </Badge>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-              <Button
-                variant="ghost" size="sm"
-                onClick={() => del.mutate(b.id)}
-                data-testid={`button-admin-cancel-${b.id}`}
-              >
-                <Trash2 className="h-4 w-4 mr-1" /> Cancel
-              </Button>
-            </div>
-          ))}
+          {upcoming.map(b => <BookingRow key={b.id} b={b} />)}
         </div>
       </Section>
 
       {past.length > 0 && (
         <Section title="Recent past">
-          <div className="space-y-2 opacity-70">
-            {past.map(b => (
-              <div key={b.id} className="border rounded-md p-3 flex items-center justify-between text-sm">
-                <div className="flex items-center gap-2">
-                  <Avatar className="h-7 w-7">
-                    {b.photoPath ? <AvatarImage src={b.photoPath} alt={b.playerName} /> : null}
-                    <AvatarFallback className="text-[10px]">{initialsFor(b.playerName)}</AvatarFallback>
-                  </Avatar>
-                  <span>{formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)} · <button type="button" className="underline-offset-2 hover:underline" onClick={() => openNotesFor(b.profileId)}>{b.playerName}</button></span>
-                </div>
-                <Badge variant="outline">Done</Badge>
-              </div>
-            ))}
+          <div className="space-y-2">
+            {past.map(b => <BookingRow key={b.id} b={b} dimmed />)}
           </div>
         </Section>
       )}
@@ -533,8 +558,28 @@ function BookingsPanel() {
 function AvailabilityPanel() {
   const qc = useQueryClient();
   const { toast } = useToast();
+
+  // Coach selector (multi-coach only)
+  const { data: coachesData } = useQuery<AdminCoach[]>({ queryKey: ["/api/coaches"], staleTime: 60_000 });
+  const coaches: AdminCoach[] = coachesData ?? [];
+  const showCoachSelector = coaches.length >= 2;
+  const [selectedCoachId, setSelectedCoachId] = useState<number | null>(null);
+  // Default to first coach once list loads
+  useEffect(() => {
+    if (coaches.length > 0 && selectedCoachId === null) {
+      setSelectedCoachId(coaches[0].id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coaches.length]);
+  const selectedCoach = coaches.find(c => c.id === selectedCoachId) ?? null;
+
+  const coachParam = selectedCoachId ? `?coachId=${selectedCoachId}` : "";
   const { data, isLoading } = useQuery<{ weekly: Availability[]; overrides: DateOverride[] }>({
-    queryKey: ["/api/availability"],
+    queryKey: ["/api/availability", selectedCoachId],
+    queryFn: async () => {
+      const r = await apiRequest("GET", `/api/availability${coachParam}`);
+      return r.json();
+    },
   });
   // Multiple windows per day. Each window has start/end + mode.
   // mode: "both" = solo OR group can book this window (default)
@@ -608,7 +653,8 @@ function AvailabilityPanel() {
           rows.push({ dayOfWeek: d, startTime: w.start, endTime: w.end, mode: w.mode });
         }
       }
-      await apiRequest("PUT", "/api/availability", rows);
+      // Pass coachId in body so the server scopes the save to this coach
+      await apiRequest("PUT", "/api/availability", { rows, coachId: selectedCoachId ?? undefined });
     },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/availability"] });
@@ -625,6 +671,41 @@ function AvailabilityPanel() {
       <p className="text-sm text-muted-foreground">
         Set your weekly recurring hours. Add multiple time windows on the same day to leave a break in between. Each window can be tagged solo, group, or any lesson.
       </p>
+      {/* Coach selector — only shown when 2+ lesson-giving coaches */}
+      {showCoachSelector && (
+        <div className="flex items-center gap-3">
+          <Label className="text-sm shrink-0">Editing availability for</Label>
+          <Select
+            value={selectedCoachId !== null ? String(selectedCoachId) : ""}
+            onValueChange={v => {
+              setSelectedCoachId(Number(v));
+              setDraft({});
+            }}
+          >
+            <SelectTrigger className="w-48">
+              <SelectValue placeholder="Pick a coach" />
+            </SelectTrigger>
+            <SelectContent>
+              {coaches.map(c => (
+                <SelectItem key={c.id} value={String(c.id)}>
+                  <span className="flex items-center gap-2">
+                    {c.color && (
+                      <span
+                        className="inline-block h-3 w-3 rounded-full shrink-0"
+                        style={{ background: c.color }}
+                      />
+                    )}
+                    {c.name || "Coach"}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+      )}
+      {!showCoachSelector && selectedCoach && (
+        <p className="text-sm text-muted-foreground">Editing your availability.</p>
+      )}
       {isLoading || !data ? (
         <p className="text-sm">Loading…</p>
       ) : (
@@ -2883,8 +2964,26 @@ const DURATION_OPTIONS = [30, 45, 60, 75, 90, 120];
 function LessonTypesPanel() {
   const { toast } = useToast();
   const qc = useQueryClient();
+
+  // Coach selector (multi-coach only)
+  const { data: coachesData } = useQuery<AdminCoach[]>({ queryKey: ["/api/coaches"], staleTime: 60_000 });
+  const coaches: AdminCoach[] = coachesData ?? [];
+  const showCoachSelector = coaches.length >= 2;
+  const [selectedCoachId, setSelectedCoachId] = useState<number | null>(null);
+  useEffect(() => {
+    if (coaches.length > 0 && selectedCoachId === null) {
+      setSelectedCoachId(coaches[0].id);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [coaches.length]);
+
+  const coachParam = selectedCoachId ? `?coachId=${selectedCoachId}` : "";
   const { data, isLoading } = useQuery<{ lessonTypes: LessonType[] }>({
-    queryKey: ["/api/admin/lesson-types"],
+    queryKey: ["/api/admin/lesson-types", selectedCoachId],
+    queryFn: async () => {
+      const r = await apiRequest("GET", `/api/admin/lesson-types${coachParam}`);
+      return r.json();
+    },
   });
 
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -2898,7 +2997,10 @@ function LessonTypesPanel() {
 
   const createMut = useMutation({
     mutationFn: async (payload: typeof draft) => {
-      const r = await apiRequest("POST", "/api/admin/lesson-types", { ...payload, sortOrder: 999 });
+      const r = await apiRequest("POST", "/api/admin/lesson-types", {
+        ...payload, sortOrder: 999,
+        coachId: selectedCoachId ?? undefined,
+      });
       return r.json();
     },
     onSuccess: () => {
@@ -2967,6 +3069,40 @@ function LessonTypesPanel() {
             </Button>
           )}
         </div>
+
+        {/* Coach selector — only when 2+ coaches */}
+        {showCoachSelector && (
+          <div className="flex items-center gap-3">
+            <Label className="text-sm shrink-0">Coach</Label>
+            <Select
+              value={selectedCoachId !== null ? String(selectedCoachId) : ""}
+              onValueChange={v => {
+                setSelectedCoachId(Number(v));
+                setEditingId(null);
+                setShowNew(false);
+              }}
+            >
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="Pick a coach" />
+              </SelectTrigger>
+              <SelectContent>
+                {coaches.map(c => (
+                  <SelectItem key={c.id} value={String(c.id)}>
+                    <span className="flex items-center gap-2">
+                      {c.color && (
+                        <span
+                          className="inline-block h-3 w-3 rounded-full shrink-0"
+                          style={{ background: c.color }}
+                        />
+                      )}
+                      {c.name || "Coach"}
+                    </span>
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
 
         {showNew && (
           <div className="border rounded-lg p-4 space-y-3 bg-muted/30">

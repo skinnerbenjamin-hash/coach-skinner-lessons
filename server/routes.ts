@@ -33,15 +33,23 @@ startReminderLoop();
 seedDefaultAdmin("9079527860", "1qaz!QAZ");
 
 // Returns the list of admin emails that should receive booking notifications
-// for a tenant. Falls back to tenant.contact_email, then legacy
-// getSetting("coachEmail"), so single-admin sites that haven't migrated still
-// get email.  Always deduplicated and lowercased.
-function getBookingEmailRecipients(tenantId: number): string[] {
+// for a tenant. When assignedCoachId is provided, that coach's email is always
+// included (even if receives_emails=0). Falls back to tenant.contact_email,
+// then legacy getSetting("coachEmail"), so single-admin sites that haven't
+// migrated still get email. Always deduplicated and lowercased.
+function getBookingEmailRecipients(tenantId: number, assignedCoachId?: number): string[] {
   const rows = sqlite.prepare(
     `SELECT email FROM admin_users WHERE tenant_id=? AND receives_emails=1 AND email != ''`
   ).all(tenantId) as { email: string }[];
   const set = new Set<string>();
   for (const r of rows) set.add(r.email.trim().toLowerCase());
+  // Always include the assigned coach's email (even if receives_emails=0)
+  if (assignedCoachId !== undefined) {
+    const coach = sqlite.prepare(
+      `SELECT email FROM admin_users WHERE id=? AND tenant_id=? AND email != '' LIMIT 1`
+    ).get(assignedCoachId, tenantId) as { email: string } | undefined;
+    if (coach?.email) set.add(coach.email.trim().toLowerCase());
+  }
   if (set.size === 0) {
     const tenant = getTenantById(sqlite, tenantId);
     const fallback = (tenant?.contact_email || "").trim().toLowerCase();
@@ -52,6 +60,47 @@ function getBookingEmailRecipients(tenantId: number): string[] {
     if (legacy) set.add(legacy);
   }
   return Array.from(set);
+}
+
+// Helper: resolve a coachId from query/body. Returns the coachId number on
+// success, or null (after sending 400) on failure. For PUBLIC endpoints,
+// validates that the coach has gives_lessons=1. For admin endpoints pass
+// requireGivesLessons=false to allow any admin in the tenant.
+function resolveCoachId(
+  req: Request, res: Response, tenantId: number,
+  opts: { required: boolean; requireGivesLessons?: boolean } = { required: true, requireGivesLessons: true }
+): number | null | undefined {
+  const raw = req.query.coachId ?? req.body?.coachId;
+  if (raw === undefined || raw === null || raw === "") {
+    if (opts.required) {
+      res.status(400).json({ error: "coachId is required" });
+      return null;
+    }
+    return undefined; // not provided, caller handles default
+  }
+  const coachId = Number(raw);
+  if (!Number.isFinite(coachId)) {
+    res.status(400).json({ error: "coachId must be a number" });
+    return null;
+  }
+  const requireGL = opts.requireGivesLessons !== false;
+  const query = requireGL
+    ? `SELECT id FROM admin_users WHERE id=? AND tenant_id=? AND gives_lessons=1 LIMIT 1`
+    : `SELECT id FROM admin_users WHERE id=? AND tenant_id=? LIMIT 1`;
+  const coach = sqlite.prepare(query).get(coachId, tenantId) as { id: number } | undefined;
+  if (!coach) {
+    res.status(400).json({ error: requireGL ? "Invalid coach or coach does not give lessons" : "Invalid coach" });
+    return null;
+  }
+  return coachId;
+}
+
+// Returns the single lesson-giving coach for a tenant, or null if 0 or 2+ exist.
+function getSoloCoach(tenantId: number): { id: number } | null {
+  const coaches = sqlite.prepare(
+    `SELECT id FROM admin_users WHERE tenant_id=? AND gives_lessons=1 AND email != '' ORDER BY id LIMIT 2`
+  ).all(tenantId) as { id: number }[];
+  return coaches.length === 1 ? coaches[0] : null;
 }
 
 const SLOT_MIN = 30;
@@ -189,11 +238,11 @@ function normalizeMode(m: string | null | undefined): OpenWindow["mode"] {
   if (m === "solo" || m === "group") return m;
   return "both";
 }
-function openWindowsForDate(tenantId: number, date: string): OpenWindow[] {
-  const overrides = storage.getDateOverrides(tenantId).filter(o => o.date === date);
+function openWindowsForDate(tenantId: number, date: string, adminUserId?: number): OpenWindow[] {
+  const overrides = storage.getDateOverrides(tenantId, adminUserId).filter(o => o.date === date);
   if (overrides.some(o => o.type === "closed")) return [];
   const dow = dayOfWeek(date);
-  const base = storage.getAvailability(tenantId).filter(a => a.dayOfWeek === dow);
+  const base = storage.getAvailability(tenantId, adminUserId).filter(a => a.dayOfWeek === dow);
   const wins: OpenWindow[] = base.map(b => ({
     start: timeToMin(b.startTime),
     end: timeToMin(b.endTime),
@@ -226,9 +275,9 @@ function openWindowsForDate(tenantId: number, date: string): OpenWindow[] {
 //   - isGroupFilter=true  -> windows with mode in {"group", "both"}
 //   - isGroupFilter=false -> windows with mode in {"solo", "both"}
 //   - isGroupFilter=null  -> all windows (legacy behavior, used by admin views)
-function slotsForDate(tenantId: number, date: string, isGroupFilter: boolean | null = null) {
+function slotsForDate(tenantId: number, date: string, isGroupFilter: boolean | null = null, adminUserId?: number) {
   const out: string[] = [];
-  for (const w of openWindowsForDate(tenantId, date)) {
+  for (const w of openWindowsForDate(tenantId, date, adminUserId)) {
     if (isGroupFilter === true && w.mode === "solo") continue;
     if (isGroupFilter === false && w.mode === "group") continue;
     for (let m = w.start; m + SLOT_MIN <= w.end; m += SLOT_MIN) out.push(toIso(date, minToTime(m)));
@@ -274,9 +323,14 @@ function availabilityForRange(
   startDate: string,
   endDate: string,
   forLessonType: { id: number; capacity: number; isGroup: boolean; durationMin: number } | null = null,
+  adminUserId?: number,
 ) {
   const isGroupFilter = forLessonType ? forLessonType.isGroup : null;
-  const all = storage.getBookingsInRange(tenantId, startDate + "T00:00", endDate + "T23:59");
+  // When scoped to a coach, only consider bookings for that coach.
+  const allBookings = storage.getBookingsInRange(tenantId, startDate + "T00:00", endDate + "T23:59");
+  const all = adminUserId !== undefined
+    ? allBookings.filter(b => b.adminUserId === adminUserId)
+    : allBookings;
   const lessonTypeDurations = new Map<number, number>();
   const lessonTypeIsGroup = new Map<number, boolean>();
   for (const lt of storage.listLessonTypes(tenantId)) {
@@ -310,7 +364,7 @@ function availabilityForRange(
   const days: { date: string; slots: { start: string; booked: boolean; remainingSpots?: number }[] }[] = [];
   let cur = startDate;
   while (cur <= endDate) {
-    const slots = slotsForDate(tenantId, cur, isGroupFilter).map(s => {
+    const slots = slotsForDate(tenantId, cur, isGroupFilter, adminUserId).map(s => {
       if (!forLessonType) {
         // No lesson type picked — use the legacy semantics (admin view).
         return { start: s, booked: bookedSet.has(s) };
@@ -808,23 +862,63 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true, signedOut: !!updates.password });
   });
 
+  // Public list of coaches for this tenant (lesson-givers only, no email/phone)
+  app.get("/api/coaches", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const coaches = sqlite.prepare(
+      `SELECT id, name, color FROM admin_users WHERE tenant_id=? AND gives_lessons=1 AND email != '' ORDER BY id`
+    ).all(tenantId) as { id: number; name: string; color: string | null }[];
+    res.json(coaches.map(c => ({ id: c.id, name: c.name || "", color: c.color || "" })));
+  });
+
   // Availability
   app.get("/api/availability", (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
-    res.json({ weekly: storage.getAvailability(tenantId), overrides: storage.getDateOverrides(tenantId) });
+    // Optional coachId — defaults to solo coach for back-compat
+    let adminUserId: number | undefined;
+    const coachIdRaw = req.query.coachId;
+    if (coachIdRaw !== undefined && coachIdRaw !== "") {
+      adminUserId = Number(coachIdRaw);
+    } else {
+      const solo = getSoloCoach(tenantId);
+      if (solo) adminUserId = solo.id;
+    }
+    res.json({ weekly: storage.getAvailability(tenantId, adminUserId), overrides: storage.getDateOverrides(tenantId, adminUserId) });
   });
   app.put("/api/availability", requireAdmin, (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
-    const parsed = z.array(insertAvailabilitySchema).safeParse(req.body);
+    // coachId required in body for multi-coach; if absent, fall back to solo coach
+    let adminUserId: number | undefined;
+    const coachIdBody = req.body?.coachId;
+    if (coachIdBody !== undefined && coachIdBody !== null && coachIdBody !== "") {
+      const resolved = resolveCoachId(req, res, tenantId, { required: false, requireGivesLessons: false });
+      if (resolved === null) return; // error already sent
+      adminUserId = resolved ?? undefined;
+    } else {
+      const solo = getSoloCoach(tenantId);
+      if (solo) adminUserId = solo.id;
+    }
+    const parsed = z.array(insertAvailabilitySchema).safeParse(req.body?.rows ?? req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    storage.setAvailability(tenantId, parsed.data);
+    storage.setAvailability(tenantId, parsed.data, adminUserId);
     res.json({ ok: true });
   });
   app.post("/api/overrides", requireAdmin, async (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    // Resolve coach for the override
+    let overrideAdminUserId: number | undefined;
+    const coachIdBody = req.body?.coachId;
+    if (coachIdBody !== undefined && coachIdBody !== null && coachIdBody !== "") {
+      const resolved = resolveCoachId(req, res, tenantId, { required: false, requireGivesLessons: false });
+      if (resolved === null) return;
+      overrideAdminUserId = resolved ?? undefined;
+    } else {
+      const solo = getSoloCoach(tenantId);
+      if (solo) overrideAdminUserId = solo.id;
+    }
     const parsed = insertDateOverrideSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    const override = storage.addDateOverride(tenantId, parsed.data);
+    const override = storage.addDateOverride(tenantId, parsed.data, overrideAdminUserId);
 
     // If this is a 'closed' blackout, cancel every booking on that date and notify the parents
     // via the configured reminder channel (email by default, with SMS fallback).
@@ -890,6 +984,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Optional ?lessonTypeId= filters slots so customers only see windows that
   // match the selected lesson type's group flag (solo vs group). When omitted,
   // returns all slots regardless of window mode (used by admin views).
+  // Optional ?coachId= scopes slots to a specific coach. Defaults to the solo
+  // coach when only one lesson-giving coach exists (back-compat).
   app.get("/api/slots", (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const start = String(req.query.start || "");
@@ -905,6 +1001,15 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (requestedEndMs > maxEndMs) {
         effectiveEnd = new Date(maxEndMs).toISOString();
       }
+    }
+    // Resolve coachId: explicit > solo-coach fallback > undefined (all coaches)
+    let slotsAdminUserId: number | undefined;
+    const coachIdParam = req.query.coachId;
+    if (coachIdParam !== undefined && coachIdParam !== "") {
+      slotsAdminUserId = Number(coachIdParam);
+    } else {
+      const solo = getSoloCoach(tenantId);
+      if (solo) slotsAdminUserId = solo.id;
     }
     // Resolve full lesson type from optional lessonTypeId query param. When
     // present, the slot grid filters by window mode AND computes per-slot
@@ -926,7 +1031,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
     }
     res.json({
-      days: availabilityForRange(tenantId, start, effectiveEnd, forLessonType),
+      days: availabilityForRange(tenantId, start, effectiveEnd, forLessonType, slotsAdminUserId),
       maxBookingDays: tenantMaxBookingDays(req),
       minLeadHours: tenantMinLeadHours(req),
       // Phase 2: surface tenant-level toggles so the booking page can decide
@@ -967,6 +1072,23 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { slots, phone, email, parentName, playerName, notes, lessonTypeId, participants } = parsed.data;
     const isAdmin = isAdminReq(req);
+
+    // Resolve which coach this booking is for. Defaults to solo coach for back-compat.
+    let bookingAdminUserId: number | undefined;
+    const coachIdInBody = req.body?.coachId;
+    if (coachIdInBody !== undefined && coachIdInBody !== null && coachIdInBody !== "") {
+      const coachNum = Number(coachIdInBody);
+      if (!Number.isFinite(coachNum)) return res.status(400).json({ error: "coachId must be a number" });
+      const coachRow = sqlite.prepare(
+        `SELECT id FROM admin_users WHERE id=? AND tenant_id=? AND gives_lessons=1 LIMIT 1`
+      ).get(coachNum, tenantId) as { id: number } | undefined;
+      if (!coachRow) return res.status(400).json({ error: "This coach is no longer accepting bookings" });
+      bookingAdminUserId = coachNum;
+    } else {
+      const solo = getSoloCoach(tenantId);
+      if (solo) bookingAdminUserId = solo.id;
+    }
+
     // upsert profile (primary booker)
     const profile = storage.upsertProfile(tenantId, { phone: normalizePhone(phone), email, parentName, playerName, notes });
     // Customers can't book inside the lead window or beyond the max booking
@@ -995,6 +1117,13 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       if (lt.active !== 1 && !isAdmin) {
         return res.status(400).json({ error: "That lesson type isn't currently bookable." });
       }
+      // Validate lesson type belongs to the assigned coach (when both are provided)
+      if (bookingAdminUserId !== undefined && (lt as any).adminUserId !== undefined) {
+        const ltAdminId = (lt as any).adminUserId;
+        if (ltAdminId !== null && ltAdminId !== bookingAdminUserId) {
+          return res.status(400).json({ error: "That lesson type is not offered by the selected coach." });
+        }
+      }
       resolvedLessonTypeId = lt.id;
       lessonCapacity = lt.capacity;
       resolvedIsGroup = ((lt as any).isGroup ?? 0) === 1;
@@ -1006,7 +1135,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       for (const s of slots) {
         const date = isoDate(s);
         const startMin = isoToMin(s);
-        const wins = openWindowsForDate(tenantId, date);
+        const wins = openWindowsForDate(tenantId, date, bookingAdminUserId);
         const ok = wins.some(w => {
           if (startMin < w.start || startMin + SLOT_MIN > w.end) return false;
           if (w.mode === "both") return true;
@@ -1107,7 +1236,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const bookingGroup = randomUUID();
     const rows = storage.createBookings(tenantId, slots.map(s => ({
       start: s, profileId: profile.id, bookingGroup, createdAt: Date.now(), lessonTypeId: resolvedLessonTypeId,
-    })));
+    })), bookingAdminUserId);
     // Build participant profile id list: primary booker first, then each extra.
     // Strategy:
     //  - Extra with their own unique phone -> upsertProfile (normal merge).
@@ -1149,7 +1278,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
 
     // Coach notification email (fire-and-forget)
-    const recipients = getBookingEmailRecipients(tenantId);
+    const recipients = getBookingEmailRecipients(tenantId, bookingAdminUserId);
     if (recipients.length > 0) {
       const summary = expanded.map(b => `• ${b.start.replace("T", " ")}`).join("\n");
       // Collect extra participants from the first booking (group bookings share participants across sessions)
@@ -1324,7 +1453,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const timeStr = formatTime(b.start.split("T")[1]);
     const whoCancelled = isAdmin ? coachName : (profile?.parentName || "The parent");
 
-    const cancelRecipients = getBookingEmailRecipients(tenantId);
+    const cancelRecipients = getBookingEmailRecipients(tenantId, b.adminUserId ?? undefined);
     if (cancelRecipients.length > 0 && !isAdmin && profile) {
       for (const recipient of cancelRecipients) {
         sendEmail({
@@ -1509,7 +1638,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const newTime = formatTime(newStart.split("T")[1]);
     const whoChanged = isAdmin ? coachName : (profile?.parentName || "The parent");
 
-    const rescheduleRecipients = getBookingEmailRecipients(tenantId);
+    const rescheduleRecipients = getBookingEmailRecipients(tenantId, b.adminUserId ?? undefined);
     if (rescheduleRecipients.length > 0 && !isAdmin && profile) {
       for (const recipient of rescheduleRecipients) {
         sendEmail({
@@ -2149,15 +2278,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
   // ===== Lesson types (per tenant) =====
   // Public list of active lesson types — used by booking page to render options.
+  // ?coachId= optional: filter to that coach. If omitted, defaults to solo coach (back-compat).
   app.get("/api/lesson-types", (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
-    const types = storage.listLessonTypes(tenantId, { activeOnly: true });
+    let ltAdminUserId: number | undefined;
+    const coachIdParam = req.query.coachId;
+    if (coachIdParam !== undefined && coachIdParam !== "") {
+      ltAdminUserId = Number(coachIdParam);
+    } else {
+      const solo = getSoloCoach(tenantId);
+      if (solo) ltAdminUserId = solo.id;
+    }
+    const types = storage.listLessonTypes(tenantId, { activeOnly: true, adminUserId: ltAdminUserId });
     res.json({ lessonTypes: types });
   });
-  // Admin list (includes inactive).
+  // Admin list (includes inactive). ?coachId= optional for per-coach view.
   app.get("/api/admin/lesson-types", requireAdmin, (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
-    res.json({ lessonTypes: storage.listLessonTypes(tenantId) });
+    let ltAdminUserId: number | undefined;
+    const coachIdParam = req.query.coachId;
+    if (coachIdParam !== undefined && coachIdParam !== "") {
+      ltAdminUserId = Number(coachIdParam);
+    }
+    res.json({ lessonTypes: storage.listLessonTypes(tenantId, { adminUserId: ltAdminUserId }) });
   });
   app.post("/api/admin/lesson-types", requireAdmin, (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
@@ -2168,7 +2311,18 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: "Duration must be a positive multiple of 30 minutes." });
     }
     if (v.capacity < 1) return res.status(400).json({ error: "Capacity must be at least 1." });
-    const created = storage.createLessonType(tenantId, v);
+    // Resolve coachId for new lesson type — defaults to solo coach
+    let ltCreateAdminUserId: number | undefined;
+    const coachIdBody = req.body?.coachId;
+    if (coachIdBody !== undefined && coachIdBody !== null && coachIdBody !== "") {
+      const resolved = resolveCoachId(req, res, tenantId, { required: false, requireGivesLessons: false });
+      if (resolved === null) return;
+      ltCreateAdminUserId = resolved ?? undefined;
+    } else {
+      const solo = getSoloCoach(tenantId);
+      if (solo) ltCreateAdminUserId = solo.id;
+    }
+    const created = storage.createLessonType(tenantId, v, ltCreateAdminUserId);
     res.json({ lessonType: created });
   });
   app.patch("/api/admin/lesson-types/:id", requireAdmin, (req, res) => {

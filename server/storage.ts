@@ -144,22 +144,39 @@ if (existing.length === 0) {
 // ---------------------------------------------------------------------------
 export class DatabaseStorage {
   // availability
-  getAvailability(tenantId: number) {
+  getAvailability(tenantId: number, adminUserId?: number) {
+    if (adminUserId !== undefined) {
+      return db.select().from(availability)
+        .where(and(eq(availability.tenantId, tenantId), eq(availability.adminUserId, adminUserId)))
+        .all();
+    }
     return db.select().from(availability).where(eq(availability.tenantId, tenantId)).all();
   }
-  setAvailability(tenantId: number, rows: InsertAvailability[]) {
-    db.delete(availability).where(eq(availability.tenantId, tenantId)).run();
+  setAvailability(tenantId: number, rows: InsertAvailability[], adminUserId?: number) {
+    if (adminUserId !== undefined) {
+      // Only delete/replace rows for this specific coach
+      db.delete(availability)
+        .where(and(eq(availability.tenantId, tenantId), eq(availability.adminUserId, adminUserId)))
+        .run();
+    } else {
+      db.delete(availability).where(eq(availability.tenantId, tenantId)).run();
+    }
     if (rows.length) {
-      db.insert(availability).values(rows.map(r => ({ ...r, tenantId }))).run();
+      db.insert(availability).values(rows.map(r => ({ ...r, tenantId, adminUserId: adminUserId ?? null }))).run();
     }
   }
 
   // overrides
-  getDateOverrides(tenantId: number) {
+  getDateOverrides(tenantId: number, adminUserId?: number) {
+    if (adminUserId !== undefined) {
+      return db.select().from(dateOverrides)
+        .where(and(eq(dateOverrides.tenantId, tenantId), eq(dateOverrides.adminUserId, adminUserId)))
+        .all();
+    }
     return db.select().from(dateOverrides).where(eq(dateOverrides.tenantId, tenantId)).all();
   }
-  addDateOverride(tenantId: number, o: InsertDateOverride): DateOverride {
-    return db.insert(dateOverrides).values({ ...o, tenantId }).returning().get();
+  addDateOverride(tenantId: number, o: InsertDateOverride, adminUserId?: number): DateOverride {
+    return db.insert(dateOverrides).values({ ...o, tenantId, adminUserId: adminUserId ?? null }).returning().get();
   }
   deleteDateOverride(tenantId: number, id: number) {
     db.delete(dateOverrides)
@@ -296,10 +313,10 @@ export class DatabaseStorage {
       .where(and(eq(bookings.tenantId, tenantId), eq(bookings.profileId, profileId)))
       .all();
   }
-  createBookings(tenantId: number, rows: InsertBooking[]): Booking[] {
+  createBookings(tenantId: number, rows: InsertBooking[], adminUserId?: number): Booking[] {
     const out: Booking[] = [];
     for (const r of rows) {
-      out.push(db.insert(bookings).values({ ...r, tenantId }).returning().get());
+      out.push(db.insert(bookings).values({ ...r, tenantId, adminUserId: adminUserId ?? null }).returning().get());
     }
     return out;
   }
@@ -356,10 +373,13 @@ export class DatabaseStorage {
   }
 
   // ===== Lesson types (per tenant) =====
-  listLessonTypes(tenantId: number, opts?: { activeOnly?: boolean }): LessonType[] {
-    const rows = db.select().from(lessonTypes)
+  listLessonTypes(tenantId: number, opts?: { activeOnly?: boolean; adminUserId?: number }): LessonType[] {
+    let rows = db.select().from(lessonTypes)
       .where(eq(lessonTypes.tenantId, tenantId))
       .all();
+    if (opts?.adminUserId !== undefined) {
+      rows = rows.filter(r => r.adminUserId === opts.adminUserId);
+    }
     const filtered = opts?.activeOnly ? rows.filter(r => r.active === 1) : rows;
     return filtered.sort((a, b) => (a.sortOrder - b.sortOrder) || a.id - b.id);
   }
@@ -368,8 +388,8 @@ export class DatabaseStorage {
       .where(and(eq(lessonTypes.tenantId, tenantId), eq(lessonTypes.id, id)))
       .get();
   }
-  createLessonType(tenantId: number, input: Omit<InsertLessonType, "tenantId">): LessonType {
-    const row = { ...input, tenantId, createdAt: Date.now() } as InsertLessonType & { createdAt: number };
+  createLessonType(tenantId: number, input: Omit<InsertLessonType, "tenantId">, adminUserId?: number): LessonType {
+    const row = { ...input, tenantId, createdAt: Date.now(), adminUserId: adminUserId ?? null } as InsertLessonType & { createdAt: number; adminUserId: number | null };
     return db.insert(lessonTypes).values(row).returning().get();
   }
   updateLessonType(tenantId: number, id: number, patch: Partial<Omit<InsertLessonType, "tenantId">>): LessonType | undefined {
@@ -436,6 +456,20 @@ export class DatabaseStorage {
       // expand cleanly with no extras.
       extraParticipants = [];
     }
+    // Denormalize coach color + name so admin UI can color-code rows without N+1 lookups.
+    let adminColor: string | undefined;
+    let adminName: string | undefined;
+    if (b.adminUserId != null) {
+      try {
+        const coach = sqlite.prepare(
+          `SELECT name, color FROM admin_users WHERE id = ? AND tenant_id = ? LIMIT 1`
+        ).get(b.adminUserId, tenantId) as { name: string; color: string } | undefined;
+        if (coach) {
+          adminColor = coach.color || undefined;
+          adminName = coach.name || undefined;
+        }
+      } catch { /* ignore */ }
+    }
     return {
       ...b,
       parentName: p?.parentName ?? "(unknown)",
@@ -444,6 +478,8 @@ export class DatabaseStorage {
       email: p?.email ?? "",
       notes: p?.notes ?? "",
       photoPath: p?.photoPath ?? "",
+      adminColor,
+      adminName,
       extraParticipants,
     };
   }

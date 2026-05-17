@@ -457,6 +457,38 @@ export function runMigrations(sqlite: DB) {
     if (email) setEmail.run(email, o.id);
   }
 
+  // ---- 7d. Per-coach foreign keys (Stage 2B) -----------------------------
+  // Add admin_user_id to bookings, availability, date_overrides, lesson_types.
+  // Backfill every row to the tenant's owner admin so existing single-coach
+  // sites keep behaving identically.
+  const coachFkTables = ["bookings", "availability", "date_overrides", "lesson_types"];
+  for (const tbl of coachFkTables) {
+    if (tableExists(sqlite, tbl) && !columnExists(sqlite, tbl, "admin_user_id")) {
+      sqlite.exec(`ALTER TABLE ${tbl} ADD COLUMN admin_user_id INTEGER`);
+    }
+  }
+
+  // Backfill: every row gets the owner admin for its tenant.
+  const tenants2b = sqlite.prepare(`SELECT id FROM tenants`).all() as { id: number }[];
+  for (const t of tenants2b) {
+    const owner = sqlite.prepare(
+      `SELECT id FROM admin_users WHERE tenant_id=? AND is_owner=1 LIMIT 1`
+    ).get(t.id) as { id: number } | undefined;
+    if (!owner) continue;
+    for (const tbl of coachFkTables) {
+      if (!tableExists(sqlite, tbl)) continue;
+      sqlite.prepare(
+        `UPDATE ${tbl} SET admin_user_id=? WHERE tenant_id=? AND admin_user_id IS NULL`
+      ).run(owner.id, t.id);
+    }
+  }
+
+  // Indexes for fast coach-scoped lookups.
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS bookings_tenant_coach_idx       ON bookings(tenant_id, admin_user_id)`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS availability_tenant_coach_idx   ON availability(tenant_id, admin_user_id)`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS date_overrides_tenant_coach_idx ON date_overrides(tenant_id, admin_user_id)`);
+  sqlite.exec(`CREATE INDEX IF NOT EXISTS lesson_types_tenant_coach_idx   ON lesson_types(tenant_id, admin_user_id)`);
+
   // ---- 8. Drop legacy UNIQUE(start) on bookings -----------------------
   // Two reasons:
   //   - Different tenants can have bookings at the same wall-clock start.
