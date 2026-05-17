@@ -85,10 +85,11 @@ export default function Marketing() {
               Booking software built for the cages and the diamond.
             </h1>
             <p className="mt-6 text-lg text-muted-foreground">
-              Stop juggling DMs and group chats with travel-ball parents. LessonSpot gives you a
-              branded booking page at <span className="font-semibold">your-name.lessonspot.app</span> —
-              set your cage hours, run hitting and pitching lessons, host group clinics, and keep
-              private notes with every family in one place.
+              Stop juggling DMs and group chats. LessonSpot gives you a branded booking page at{" "}
+              <span className="font-semibold">your-name.lessonspot.app</span> — plus a private
+              thread with every athlete where you can share swing-fix videos, drill clips, and
+              lesson notes back and forth. Booking, feedback, and your video library all in one
+              place.
             </p>
             <div className="mt-8 flex flex-col sm:flex-row gap-3">
               <Button size="lg" onClick={goSignup} data-testid="button-marketing-signup-hero">
