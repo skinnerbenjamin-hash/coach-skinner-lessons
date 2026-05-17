@@ -23,7 +23,7 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter,
   DialogHeader, DialogTitle,
 } from "@/components/ui/dialog";
-import { useTenantLabels } from "@/hooks/use-tenant";
+import { useTenant, useTenantLabels } from "@/hooks/use-tenant";
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
@@ -57,6 +57,11 @@ type Step = "profile" | "pick" | "review" | "done";
 export default function Book() {
   const { toast } = useToast();
   const labels = useTenantLabels(); // { booker: "Parent", attendee: "Player" } or tenant overrides
+  const { data: tenantInfo } = useTenant();
+  // Short, neutral way to refer to the business in copy.  Falls back to a
+  // generic word so the booking page never literally says "Coach" unless the
+  // tenant has that in their business name.
+  const businessName = tenantInfo?.name || "the instructor";
   const [step, setStep] = useState<Step>("profile");
 
   // profile
@@ -427,7 +432,7 @@ export default function Book() {
                 <Input
                   id="parent"
                   data-testid="input-parent-name"
-                  placeholder="Jane Skinner"
+                  placeholder="Full name"
                   value={parentName}
                   onChange={(e) => setParentName(e.target.value)}
                 />
@@ -437,7 +442,7 @@ export default function Book() {
                 <Input
                   id="player"
                   data-testid="input-player-name"
-                  placeholder="Emma Skinner"
+                  placeholder={`${labels.attendee} full name`}
                   value={playerName}
                   onChange={(e) => setPlayerName(e.target.value)}
                 />
@@ -447,7 +452,7 @@ export default function Book() {
                 <Input
                   id="notes"
                   data-testid="input-notes"
-                  placeholder="Hitting, pitching, fielding…"
+                  placeholder="What you'd like to work on (optional)"
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                 />
@@ -472,7 +477,7 @@ export default function Book() {
                 <div className="flex-1">
                   <Label className="text-sm font-medium">{labels.attendee} photo (optional)</Label>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Helps Coach recognize {playerName || `your ${labels.attendee.toLowerCase()}`} on lesson day. You can add or change this anytime later.
+                    Helps {businessName} recognize {playerName || `your ${labels.attendee.toLowerCase()}`} on lesson day. You can add or change this anytime later.
                   </p>
                   <div className="mt-2 flex flex-wrap items-center gap-2">
                     <label className="cursor-pointer">
@@ -715,8 +720,7 @@ export default function Book() {
                   <AlertDescription>
                     <div className="font-medium">{w.message}</div>
                     <div className="text-sm text-muted-foreground mt-1">
-                      Coach tries to avoid short orphan gaps. Want to shift one of your
-                      slots to close it?
+                      Helps {businessName} avoid short orphan gaps in the calendar. Want to shift one of your slots to close it?
                     </div>
                     {w.suggestion && (
                       <div className="mt-3 flex flex-wrap items-center gap-2">

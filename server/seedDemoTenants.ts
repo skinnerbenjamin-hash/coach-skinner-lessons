@@ -101,7 +101,7 @@ const DEMO_TENANTS: DemoTenant[] = [
     tagline: "Swing analysis, short game, and on-course coaching.",
     about: "A sample LessonSpot booking page for a golf instructor. Players can book a slot at the range, the green, or out on the course.",
     bookerLabel: "Client",
-    attendeeLabel: "",
+    attendeeLabel: "Golfer",
     contactEmail: "demo@lessonspot.app",
     contactLocation: "Carmel, IN",
     lessonTypes: [

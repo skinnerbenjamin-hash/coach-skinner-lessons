@@ -12,6 +12,7 @@ import {
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { FileText, ExternalLink, Image as ImageIcon, Lock, Search, Video } from "lucide-react";
+import { useTenant } from "@/hooks/use-tenant";
 
 type Resource = {
   id: number;
@@ -52,6 +53,8 @@ export default function Resources() {
   const [activeEmail, setActiveEmail] = useState<string | null>(null);
   const [category, setCategory] = useState<string>("all");
   const { toast } = useToast();
+  const { data: tenantInfo } = useTenant();
+  const businessName = tenantInfo?.name || "the instructor";
 
   useEffect(() => {
     try {
@@ -127,8 +130,8 @@ export default function Resources() {
             </Button>
           </div>
           <p className="text-xs text-muted-foreground">
-            The library is only available to families who have booked or signed up. If your email
-            isn't recognized, book a lesson first or reach out to Coach.
+            The library is only available to people who have booked or signed up. If your email
+            isn't recognized, book a lesson first or reach out to {businessName}.
           </p>
         </CardContent>
       </Card>
