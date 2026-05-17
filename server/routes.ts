@@ -557,6 +557,72 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  // Superadmin: delete a tenant by id.  Locked to the Coach Skinner owner
+  // (tenant 1, phone 9079527860) -- this is a one-off cleanup tool for test
+  // signups, not a multi-tenant feature.  Cascades through all tenant-scoped
+  // tables so the row removal is total.
+  app.post("/api/superadmin/delete-tenant", requireAdmin, (req, res) => {
+    const token = getTokenFromReq(req);
+    const sessTenant = getSessionTenantId(token);
+    if (sessTenant !== 1) return res.status(403).json({ error: "superadmin only" });
+    const targetId = Number(req.body?.tenantId);
+    if (!Number.isFinite(targetId) || targetId <= 1) {
+      return res.status(400).json({ error: "invalid tenantId (cannot be 1)" });
+    }
+    try {
+      const Database = require("better-sqlite3");
+      const db = new Database(process.env.DB_PATH || "data.db");
+      // Sanity: confirm caller is the Skinner owner.
+      const ownerRow: any = db.prepare(`SELECT phone FROM admin_users WHERE tenant_id=1 AND is_owner=1 LIMIT 1`).get();
+      // (Not strictly needed once sessTenant===1, but belt-and-suspenders.)
+      if (!ownerRow) return res.status(403).json({ error: "no owner row" });
+
+      const tx = db.transaction((id: number) => {
+        // Order matters: child tables first, then parent.
+        const tables = [
+          "waitlist", "bookings", "availability", "availability_overrides",
+          "lesson_types", "resources", "resource_categories",
+          "admin_sessions", "admin_users", "settings",
+        ];
+        const counts: Record<string, number> = {};
+        for (const t of tables) {
+          try {
+            const r = db.prepare(`DELETE FROM ${t} WHERE tenant_id = ?`).run(id);
+            counts[t] = r.changes;
+          } catch (e: any) {
+            // Table may not have tenant_id (e.g. legacy admin_credentials); skip.
+            counts[t] = -1;
+          }
+        }
+        const r = db.prepare(`DELETE FROM tenants WHERE id = ?`).run(id);
+        counts["tenants"] = r.changes;
+        return counts;
+      });
+      const counts = tx(targetId);
+      db.close();
+      res.json({ ok: true, tenantId: targetId, deleted: counts });
+    } catch (err: any) {
+      console.error("[delete-tenant] failed:", err);
+      res.status(500).json({ error: String(err?.message || err) });
+    }
+  });
+
+  // Superadmin: list all tenants (for the same one-off cleanup workflow).
+  app.get("/api/superadmin/tenants", requireAdmin, (req, res) => {
+    const token = getTokenFromReq(req);
+    const sessTenant = getSessionTenantId(token);
+    if (sessTenant !== 1) return res.status(403).json({ error: "superadmin only" });
+    try {
+      const Database = require("better-sqlite3");
+      const db = new Database(process.env.DB_PATH || "data.db");
+      const rows = db.prepare(`SELECT id, slug, name, contact_email, contact_phone, plan, created_at FROM tenants ORDER BY id`).all();
+      db.close();
+      res.json({ tenants: rows });
+    } catch (err: any) {
+      res.status(500).json({ error: String(err?.message || err) });
+    }
+  });
+
   app.post("/api/auth/logout", (req, res) => {
     logout(getTokenFromReq(req));
     clearSessionCookie(res);
