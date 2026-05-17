@@ -10,7 +10,19 @@
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Check, Clock, CalendarDays, Users, BellRing, ShieldCheck } from "lucide-react";
+import { Check, Clock, CalendarDays, Users, BellRing, ShieldCheck, ArrowRight } from "lucide-react";
+
+// Demo tenants seeded server-side at boot (see server/seedDemoTenants.ts).
+// Each card links to demo-<sport>.lessonspot.app so visitors can poke around a
+// realistic booking page before they sign up.
+const DEMO_SPORTS: { slug: string; label: string; tagline: string; emoji: string }[] = [
+  { slug: "demo-softball",  label: "Softball",      tagline: "Hitting, pitching, group clinics", emoji: "\u{1F94E}" },
+  { slug: "demo-tennis",    label: "Tennis",        tagline: "Privates, semi-privates, clinics", emoji: "\u{1F3BE}" },
+  { slug: "demo-golf",      label: "Golf",          tagline: "Range, short game, playing lessons", emoji: "\u{26F3}" },
+  { slug: "demo-music",     label: "Music lessons", tagline: "Piano, guitar, voice", emoji: "\u{1F3B5}" },
+  { slug: "demo-tutoring",  label: "Tutoring",      tagline: "Math, reading, test prep", emoji: "\u{1F4DA}" },
+  { slug: "demo-wrestling", label: "Wrestling",     tagline: "Privates, practices, open mat", emoji: "\u{1F93C}" },
+];
 
 export default function Marketing() {
   function goSignup() {
@@ -31,6 +43,17 @@ export default function Marketing() {
             <span>LessonSpot</span>
           </div>
           <nav className="flex items-center gap-2">
+            <a
+              href="#demos"
+              className="text-sm text-muted-foreground hover:text-foreground px-3 py-2 hidden sm:inline-block"
+              data-testid="link-marketing-demos"
+              onClick={(e) => {
+                e.preventDefault();
+                document.getElementById("demos")?.scrollIntoView({ behavior: "smooth" });
+              }}
+            >
+              Examples
+            </a>
             <a
               href="#pricing"
               className="text-sm text-muted-foreground hover:text-foreground px-3 py-2"
@@ -125,6 +148,45 @@ export default function Marketing() {
             body="Take payments however you already do — Venmo, Zelle, cash at the door. Or plug in Stripe later for card payments with just a 2% platform fee."
           />
         </div>
+      </section>
+
+      {/* See it for your sport */}
+      <section id="demos" className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16 border-t">
+        <div className="max-w-2xl mb-10">
+          <h2 className="text-2xl font-semibold mb-3">See it for your sport</h2>
+          <p className="text-muted-foreground">
+            Pick a category and open a live preview of a LessonSpot booking page. Lesson types, hours, and branding are sport-specific so you can see what yours could look like.
+          </p>
+        </div>
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+          {DEMO_SPORTS.map((s) => (
+            <a
+              key={s.slug}
+              href={`https://${s.slug}.lessonspot.app`}
+              target="_blank"
+              rel="noreferrer"
+              className="group block"
+              data-testid={`link-demo-${s.slug}`}
+            >
+              <Card className="h-full hover:border-primary hover:shadow-sm transition">
+                <CardContent className="pt-6">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="text-3xl leading-none" aria-hidden>{s.emoji}</div>
+                    <ArrowRight className="w-4 h-4 text-muted-foreground group-hover:text-primary transition" />
+                  </div>
+                  <h3 className="font-semibold mt-4">{s.label}</h3>
+                  <p className="text-sm text-muted-foreground mt-1">{s.tagline}</p>
+                  <p className="text-xs text-muted-foreground mt-3 break-all">
+                    {s.slug}.lessonspot.app
+                  </p>
+                </CardContent>
+              </Card>
+            </a>
+          ))}
+        </div>
+        <p className="mt-6 text-sm text-muted-foreground">
+          These are example sites. To make your own, start a free trial — it takes about a minute.
+        </p>
       </section>
 
       {/* Pricing */}

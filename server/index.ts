@@ -5,6 +5,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { sqlite } from "./storage";
 import { createTenantMiddleware } from "./tenant";
+import { seedDemoTenants } from "./seedDemoTenants";
 import { createServer } from "node:http";
 
 const app = express();
@@ -69,6 +70,15 @@ app.use((req, res, next) => {
 // runMigrations() to complete first, so the tenants table is guaranteed to
 // exist by the time this prepared statement is created.
 app.use(createTenantMiddleware(sqlite));
+
+// Seed read-only demo tenants (demo-softball, demo-tennis, ...) so the
+// marketing page can link to a real booking preview for each sport.
+// Idempotent: skips any slug that already exists.
+try {
+  seedDemoTenants();
+} catch (err) {
+  console.error("[demo-seed] unexpected failure:", err);
+}
 
 (async () => {
   await registerRoutes(httpServer, app);
