@@ -460,32 +460,77 @@ function AvailabilityPanel() {
   const { data, isLoading } = useQuery<{ weekly: Availability[]; overrides: DateOverride[] }>({
     queryKey: ["/api/availability"],
   });
-  // editable per-day open/close + lesson-type mode
+  // Multiple windows per day. Each window has start/end + mode.
   // mode: "both" = solo OR group can book this window (default)
   //       "solo" = only solo lesson types
   //       "group" = only group lesson types
-  type DayDraft = { enabled: boolean; start: string; end: string; mode: "solo" | "group" | "both" };
-  const [draft, setDraft] = useState<Record<number, DayDraft>>({});
+  type Window = { start: string; end: string; mode: "solo" | "group" | "both" };
+  // Map day-of-week (0..6) -> array of windows. Empty array = closed that day.
+  const [draft, setDraft] = useState<Record<number, Window[]>>({});
 
   useMemo(() => {
     if (!data) return;
-    const next: Record<number, DayDraft> = {};
+    const next: Record<number, Window[]> = { 0: [], 1: [], 2: [], 3: [], 4: [], 5: [], 6: [] };
+    for (const w of data.weekly) {
+      next[w.dayOfWeek] = next[w.dayOfWeek] || [];
+      next[w.dayOfWeek].push({
+        start: w.startTime,
+        end: w.endTime,
+        mode: ((w.mode as Window["mode"]) ?? "both"),
+      });
+    }
+    // Sort windows by start time within each day
     for (let d = 0; d < 7; d++) {
-      const found = data.weekly.find(w => w.dayOfWeek === d);
-      next[d] = found
-        ? { enabled: true, start: found.startTime, end: found.endTime, mode: (found.mode as DayDraft["mode"]) ?? "both" }
-        : { enabled: false, start: "08:00", end: "18:00", mode: "both" };
+      next[d] = (next[d] ?? []).sort((a, b) => a.start.localeCompare(b.start));
     }
     setDraft(next);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
 
+  const addWindow = (d: number) => {
+    setDraft(s => {
+      const windows = s[d] ?? [];
+      // Suggest a window starting at the last window's end (or 08:00 default)
+      const lastEnd = windows.length > 0 ? windows[windows.length - 1].end : "08:00";
+      const startNum = timeToMinutes(lastEnd);
+      const endNum = Math.min(startNum + 120, 23 * 60 + 30);
+      return {
+        ...s,
+        [d]: [...windows, { start: lastEnd, end: minutesToTime(endNum), mode: "both" }],
+      };
+    });
+  };
+
+  const removeWindow = (d: number, i: number) => {
+    setDraft(s => ({ ...s, [d]: (s[d] ?? []).filter((_, idx) => idx !== i) }));
+  };
+
+  const updateWindow = (d: number, i: number, patch: Partial<Window>) => {
+    setDraft(s => ({
+      ...s,
+      [d]: (s[d] ?? []).map((w, idx) => (idx === i ? { ...w, ...patch } : w)),
+    }));
+  };
+
   const save = useMutation({
     mutationFn: async () => {
+      // Validate: no overlapping windows on the same day, end > start
+      for (let d = 0; d < 7; d++) {
+        const windows = (draft[d] ?? []).slice().sort((a, b) => a.start.localeCompare(b.start));
+        for (let i = 0; i < windows.length; i++) {
+          if (windows[i].end <= windows[i].start) {
+            throw new Error(`${DAYS[d]}: end time must be after start time`);
+          }
+          if (i > 0 && windows[i].start < windows[i - 1].end) {
+            throw new Error(`${DAYS[d]}: time windows overlap`);
+          }
+        }
+      }
       const rows: { dayOfWeek: number; startTime: string; endTime: string; mode: string }[] = [];
       for (let d = 0; d < 7; d++) {
-        const row = draft[d];
-        if (row?.enabled) rows.push({ dayOfWeek: d, startTime: row.start, endTime: row.end, mode: row.mode });
+        for (const w of draft[d] ?? []) {
+          rows.push({ dayOfWeek: d, startTime: w.start, endTime: w.end, mode: w.mode });
+        }
       }
       await apiRequest("PUT", "/api/availability", rows);
     },
@@ -494,68 +539,89 @@ function AvailabilityPanel() {
       qc.invalidateQueries({ queryKey: ["/api/slots"] });
       toast({ title: "Hours saved" });
     },
+    onError: (err: any) => {
+      toast({ title: "Couldn't save hours", description: err?.message ?? "Please check your time windows.", variant: "destructive" });
+    },
   });
 
   return (
     <div className="space-y-4 mt-4">
       <p className="text-sm text-muted-foreground">
-        Set your weekly recurring hours. Bookings outside these times aren't possible.
+        Set your weekly recurring hours. Add multiple time windows on the same day to leave a break in between. Each window can be tagged solo, group, or any lesson.
       </p>
       {isLoading || !data ? (
         <p className="text-sm">Loading…</p>
       ) : (
         <Card>
-          <CardContent className="p-4 space-y-2">
-            <div className="hidden sm:grid grid-cols-[6rem_6rem_1fr_1fr_8rem] gap-2 items-center text-xs text-muted-foreground pb-1">
-              <div></div>
-              <div>Open?</div>
-              <div>Start</div>
-              <div>End</div>
-              <div>Lesson types</div>
-            </div>
-            {DAYS.map((label, d) => (
-              <div key={d} className="grid grid-cols-[6rem_5rem_1fr_1fr] sm:grid-cols-[6rem_6rem_1fr_1fr_8rem] gap-2 items-center">
-                <div className="font-medium">{label}</div>
-                <Select
-                  value={draft[d]?.enabled ? "open" : "closed"}
-                  onValueChange={v => setDraft(s => ({ ...s, [d]: { ...s[d], enabled: v === "open" } }))}
-                >
-                  <SelectTrigger data-testid={`select-day-${d}`}><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="open">Open</SelectItem>
-                    <SelectItem value="closed">Closed</SelectItem>
-                  </SelectContent>
-                </Select>
-                <Input
-                  type="time"
-                  value={draft[d]?.start ?? "08:00"}
-                  onChange={e => setDraft(s => ({ ...s, [d]: { ...s[d], start: e.target.value } }))}
-                  disabled={!draft[d]?.enabled}
-                  data-testid={`input-day-${d}-start`}
-                />
-                <Input
-                  type="time"
-                  value={draft[d]?.end ?? "18:00"}
-                  onChange={e => setDraft(s => ({ ...s, [d]: { ...s[d], end: e.target.value } }))}
-                  disabled={!draft[d]?.enabled}
-                  data-testid={`input-day-${d}-end`}
-                />
-                <Select
-                  value={draft[d]?.mode ?? "both"}
-                  onValueChange={v => setDraft(s => ({ ...s, [d]: { ...s[d], mode: v as "solo" | "group" | "both" } }))}
-                  disabled={!draft[d]?.enabled}
-                >
-                  <SelectTrigger data-testid={`select-day-${d}-mode`}><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="both">Any lesson</SelectItem>
-                    <SelectItem value="solo">Solo only</SelectItem>
-                    <SelectItem value="group">Group only</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            ))}
-            <p className="text-xs text-muted-foreground pt-2">
-              Tip: pick "Group only" for days you reserve for clinics, or "Solo only" for private-lesson days. "Any lesson" lets customers pick either type in that window.
+          <CardContent className="p-4 space-y-3">
+            {DAYS.map((label, d) => {
+              const windows = draft[d] ?? [];
+              return (
+                <div key={d} className="border rounded-md p-3 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="font-medium">{label}</div>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      onClick={() => addWindow(d)}
+                      data-testid={`button-add-window-${d}`}
+                    >
+                      <Plus className="h-3.5 w-3.5 mr-1" /> Add window
+                    </Button>
+                  </div>
+                  {windows.length === 0 ? (
+                    <p className="text-xs text-muted-foreground">Closed — add a window to open this day.</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {windows.map((w, i) => (
+                        <div
+                          key={i}
+                          className="grid grid-cols-[1fr_1fr_8rem_2.5rem] gap-2 items-center"
+                        >
+                          <Input
+                            type="time"
+                            value={w.start}
+                            onChange={e => updateWindow(d, i, { start: e.target.value })}
+                            data-testid={`input-day-${d}-window-${i}-start`}
+                          />
+                          <Input
+                            type="time"
+                            value={w.end}
+                            onChange={e => updateWindow(d, i, { end: e.target.value })}
+                            data-testid={`input-day-${d}-window-${i}-end`}
+                          />
+                          <Select
+                            value={w.mode}
+                            onValueChange={v => updateWindow(d, i, { mode: v as Window["mode"] })}
+                          >
+                            <SelectTrigger data-testid={`select-day-${d}-window-${i}-mode`}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="both">Any lesson</SelectItem>
+                              <SelectItem value="solo">Solo only</SelectItem>
+                              <SelectItem value="group">Group only</SelectItem>
+                            </SelectContent>
+                          </Select>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => removeWindow(d, i)}
+                            data-testid={`button-remove-window-${d}-${i}`}
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+            <p className="text-xs text-muted-foreground pt-1">
+              Tip: split a day into a morning solo window and an evening group window — or just leave a midday break between two solo windows.
             </p>
           </CardContent>
         </Card>
@@ -567,6 +633,17 @@ function AvailabilityPanel() {
       </div>
     </div>
   );
+}
+
+// Helpers for the AvailabilityPanel time math.
+function timeToMinutes(t: string): number {
+  const [h, m] = t.split(":").map(n => parseInt(n, 10));
+  return (h || 0) * 60 + (m || 0);
+}
+function minutesToTime(mins: number): string {
+  const h = Math.floor(mins / 60);
+  const m = mins % 60;
+  return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
 }
 
 function OverridesPanel() {
