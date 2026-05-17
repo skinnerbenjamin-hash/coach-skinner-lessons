@@ -10,7 +10,7 @@
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { Check, Clock, CalendarDays, Users, BellRing, ShieldCheck, ArrowRight } from "lucide-react";
+import { Check, CalendarDays, Users, BellRing, ShieldCheck, ArrowRight, MessageSquare, Library } from "lucide-react";
 
 // Demo tenants seeded server-side at boot (see server/seedDemoTenants.ts).
 // Each card links to demo-<sport>.lessonspot.app so visitors can poke around a
@@ -118,19 +118,24 @@ export default function Marketing() {
         <h2 className="text-2xl font-semibold mb-10">Everything you need to run lessons</h2>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
           <FeatureCard
+            icon={<Users className="w-5 h-5" />}
+            title="Group and 1-on-1 lessons"
+            body="Run privates, semi-privates, and group clinics on the same calendar. Mark each availability window as solo, group, or both, and the right slots show up for the right lesson type — with real capacity tracking and waitlists when a group fills up."
+          />
+          <FeatureCard
+            icon={<MessageSquare className="w-5 h-5" />}
+            title="Private notes thread per student"
+            body="Every player or student has their own private thread. Send specific feedback after a lesson, share a swing-fix video, and let the parent reply with questions or game footage. Nothing is shared with other families."
+          />
+          <FeatureCard
+            icon={<Library className="w-5 h-5" />}
+            title="Resource library"
+            body="Build a library of drills, instructional videos, PDFs, and links your students can access any time. Organize by skill area — hitting, footwork, theory, test prep — whatever fits your program."
+          />
+          <FeatureCard
             icon={<CalendarDays className="w-5 h-5" />}
             title="Smart availability"
-            body="Set weekly hours and one-off overrides. Solo and group windows are tagged separately so the right slots show up for the right lesson type."
-          />
-          <FeatureCard
-            icon={<Users className="w-5 h-5" />}
-            title="Group lessons + waitlist"
-            body="Run group clinics with real capacity tracking. When a slot is full, families can join a waitlist and get notified the moment a spot opens."
-          />
-          <FeatureCard
-            icon={<Clock className="w-5 h-5" />}
-            title="Duration-aware slots"
-            body="A 30-minute lesson and a one-hour lesson share the same calendar — the system fits them together without double-booking."
+            body="Set weekly hours and one-off overrides. Duration-aware slots fit 30-minute and one-hour lessons on the same calendar without double-booking."
           />
           <FeatureCard
             icon={<BellRing className="w-5 h-5" />}
