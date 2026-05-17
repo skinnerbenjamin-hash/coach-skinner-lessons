@@ -24,6 +24,12 @@ import { randomBytes, scryptSync } from "node:crypto";
 
 const sqlite = new Database(process.env.DB_PATH || "data.db");
 
+// We deliberately DO NOT auto-seed sport-specific lesson types or resource
+// categories.  Brand-new tenants get a minimal, neutral starter set so the
+// app works on day one; the coach builds out their own lesson types and
+// categories from the Admin UI.  Past attempts at clever sport-aware seeding
+// produced surprising defaults the user couldn't easily change.
+
 const RESERVED_SLUGS = new Set<string>([
   "www", "app", "api", "admin", "signup", "login", "logout",
   "marketing", "support", "help", "blog", "docs", "status",
@@ -143,15 +149,23 @@ export function createTenantAndOwner(input: SignupInput): SignupResult {
       VALUES (?, ?, ?, ?, ?, 1, ?, ?)
     `).run(tenantId, phone, name, salt, hash, now, now);
 
-    // 3. Seed 3 default lesson types so the booking page has something to show
-    //    immediately.  The coach can rename/disable/add more via Admin.
+    // 3. Seed a minimal, neutral set of lesson types.  Same for every sport.
+    //    The coach renames/adds/removes from the Admin UI -- we just want the
+    //    booking page to render SOMETHING the first time a family visits.
     const ltInsert = sqlite.prepare(`
       INSERT INTO lesson_types (tenant_id, name, duration_min, capacity, is_group, active, sort_order, created_at)
       VALUES (?, ?, ?, ?, ?, 1, ?, ?)
     `);
     ltInsert.run(tenantId, "30 Min Lesson", 30, 1, 0, 1, now);
     ltInsert.run(tenantId, "1 Hour Lesson", 60, 1, 0, 2, now);
-    ltInsert.run(tenantId, "Group Clinic", 60, 4, 1, 3, now);
+    ltInsert.run(tenantId, "Group Session", 60, 4, 1, 3, now);
+
+    // 3b. Seed exactly one resource category: 'general'.  Coach builds out
+    //     the rest from the Admin UI (rename / add / delete fully supported).
+    sqlite.prepare(`
+      INSERT INTO resource_categories (tenant_id, slug, label, sort_order, created_at)
+      VALUES (?, 'general', 'General', 0, ?)
+    `).run(tenantId, now);
 
     // 4. Seed weekday availability (Mon-Fri 6-8 PM) so brand-new tenants
     //    aren't staring at an empty calendar.  Mode 'both' = solo & group allowed.

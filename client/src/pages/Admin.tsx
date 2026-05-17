@@ -1262,10 +1262,187 @@ type Resource = {
 
 const API_BASE = "__PORT_5000__".startsWith("__") ? "" : "__PORT_5000__";
 
+// Per-tenant resource categories, fetched from the admin endpoint.  We map
+// {id, slug, label} from the API to {id: slug, label} so the rest of the
+// existing component code (which used the legacy hardcoded RESOURCE_CATEGORIES
+// shape) keeps working unchanged.
+type TenantCategory = { id: number; slug: string; label: string; sort_order?: number };
+
+function ManageCategoriesPanel({ categories }: { categories: TenantCategory[] }) {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const [newLabel, setNewLabel] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editingLabel, setEditingLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  function invalidate() {
+    qc.invalidateQueries({ queryKey: ["/api/admin/resource-categories"] });
+    qc.invalidateQueries({ queryKey: ["/api/resources"] });
+  }
+
+  async function addCategory() {
+    const label = newLabel.trim();
+    if (!label) {
+      toast({ variant: "destructive", title: "Enter a category name" });
+      return;
+    }
+    setBusy(true);
+    try {
+      await apiRequest("POST", "/api/admin/resource-categories", { label });
+      setNewLabel("");
+      invalidate();
+      toast({ title: "Category added" });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Couldn't add", description: e?.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveRename(id: number) {
+    const label = editingLabel.trim();
+    if (!label) {
+      toast({ variant: "destructive", title: "Name can't be empty" });
+      return;
+    }
+    setBusy(true);
+    try {
+      await apiRequest("PATCH", `/api/admin/resource-categories/${id}`, { label });
+      setEditingId(null);
+      setEditingLabel("");
+      invalidate();
+      toast({ title: "Renamed" });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Couldn't rename", description: e?.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function removeCategory(id: number, label: string) {
+    if (!confirm(`Delete category “${label}”?`)) return;
+    setBusy(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/admin/resource-categories/${id}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        if (res.status === 409) {
+          throw new Error(err.error || "Category is in use by existing resources. Move or delete those first.");
+        }
+        throw new Error(err.error || "Couldn't delete");
+      }
+      invalidate();
+      toast({ title: "Deleted" });
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Couldn't delete", description: e?.message });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Card>
+      <CardContent className="p-5 space-y-3">
+        <div>
+          <h2 className="text-base font-semibold">Categories</h2>
+          <p className="text-sm text-muted-foreground">
+            Group resources by skill area, age group, or anything else that helps families find what they need.
+          </p>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <Input
+            value={newLabel}
+            onChange={(e) => setNewLabel(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") addCategory(); }}
+            placeholder="New category name"
+            data-testid="input-new-category"
+          />
+          <Button onClick={addCategory} disabled={busy} data-testid="button-add-category">
+            Add
+          </Button>
+        </div>
+
+        {categories.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No categories yet — add one above.</p>
+        ) : (
+          <div className="divide-y rounded-md border">
+            {categories.map((c) => (
+              <div
+                key={c.id}
+                className="flex items-center justify-between gap-2 px-3 py-2"
+                data-testid={`row-category-${c.id}`}
+              >
+                {editingId === c.id ? (
+                  <>
+                    <Input
+                      value={editingLabel}
+                      onChange={(e) => setEditingLabel(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") saveRename(c.id);
+                        if (e.key === "Escape") { setEditingId(null); setEditingLabel(""); }
+                      }}
+                      autoFocus
+                      className="flex-1"
+                      data-testid={`input-rename-category-${c.id}`}
+                    />
+                    <Button size="sm" onClick={() => saveRename(c.id)} disabled={busy} data-testid={`button-save-category-${c.id}`}>
+                      Save
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => { setEditingId(null); setEditingLabel(""); }}
+                      data-testid={`button-cancel-category-${c.id}`}
+                    >
+                      Cancel
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <div className="flex-1 min-w-0">
+                      <span className="font-medium" data-testid={`text-category-label-${c.id}`}>{c.label}</span>
+                      <span className="text-xs text-muted-foreground ml-2">{c.slug}</span>
+                    </div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => { setEditingId(c.id); setEditingLabel(c.label); }}
+                      data-testid={`button-edit-category-${c.id}`}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => removeCategory(c.id, c.label)}
+                      data-testid={`button-delete-category-${c.id}`}
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </Button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 function ResourcesPanel() {
   const qc = useQueryClient();
   const { toast } = useToast();
   const { data, isLoading } = useQuery<{ resources: Resource[] }>({ queryKey: ["/api/resources"] });
+  const { data: catData } = useQuery<{ categories: TenantCategory[] }>({
+    queryKey: ["/api/admin/resource-categories"],
+  });
+  const categories = (catData?.categories ?? []).map(c => ({ id: c.slug, label: c.label, dbId: c.id }));
   const [filterCat, setFilterCat] = useState<string>("all");
 
   // form state
@@ -1275,6 +1452,17 @@ function ResourcesPanel() {
   const [description, setDescription] = useState("");
   const [url, setUrl] = useState("");
   const [file, setFile] = useState<File | null>(null);
+
+  // If categories load AFTER initial mount and the currently selected category
+  // isn't one of them, pick whatever the first category is so the dropdown
+  // shows a valid value instead of staying stuck on the legacy default.
+  useEffect(() => {
+    if (categories.length === 0) return;
+    if (!categories.some(c => c.id === category)) {
+      setCategory(categories[0].id);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [catData]);
   const [busy, setBusy] = useState(false);
 
   function resetForm() {
@@ -1322,7 +1510,11 @@ function ResourcesPanel() {
   const resources = data?.resources ?? [];
   const filtered = filterCat === "all" ? resources : resources.filter(r => r.category === filterCat);
 
-  function catLabel(id: string) { return RESOURCE_CATEGORIES.find(c => c.id === id)?.label || id; }
+  function catLabel(id: string) {
+    return categories.find(c => c.id === id)?.label
+      || RESOURCE_CATEGORIES.find(c => c.id === id)?.label
+      || id;
+  }
   function iconFor(t: string) {
     if (t === "pdf") return <FileText className="h-4 w-4" />;
     if (t === "image") return <ImageIcon className="h-4 w-4" />;
@@ -1356,7 +1548,7 @@ function ResourcesPanel() {
               <Select value={category} onValueChange={setCategory}>
                 <SelectTrigger data-testid="select-resource-category"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {RESOURCE_CATEGORIES.map(c => (
+                  {categories.map(c => (
                     <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
                   ))}
                 </SelectContent>
@@ -1411,13 +1603,15 @@ function ResourcesPanel() {
             <SelectTrigger data-testid="select-filter-category"><SelectValue /></SelectTrigger>
             <SelectContent>
               <SelectItem value="all">All skill areas</SelectItem>
-              {RESOURCE_CATEGORIES.map(c => (
+              {categories.map(c => (
                 <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
               ))}
             </SelectContent>
           </Select>
         </div>
       </div>
+
+      <ManageCategoriesPanel categories={catData?.categories ?? []} />
 
       {isLoading && <p className="text-sm text-muted-foreground">Loading resources…</p>}
       {!isLoading && filtered.length === 0 && (
@@ -1464,6 +1658,10 @@ function ResourcesPanel() {
 function EditResourceDialog({ resource }: { resource: Resource }) {
   const qc = useQueryClient();
   const { toast } = useToast();
+  const { data: catData } = useQuery<{ categories: TenantCategory[] }>({
+    queryKey: ["/api/admin/resource-categories"],
+  });
+  const categories = (catData?.categories ?? []).map(c => ({ id: c.slug, label: c.label }));
   const [open, setOpen] = useState(false);
   const [title, setTitle] = useState(resource.title);
   const [description, setDescription] = useState(resource.description || "");
@@ -1531,7 +1729,7 @@ function EditResourceDialog({ resource }: { resource: Resource }) {
             <Select value={category} onValueChange={setCategory}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {RESOURCE_CATEGORIES.map(c => (
+                {(categories.length > 0 ? categories : RESOURCE_CATEGORIES).map(c => (
                   <SelectItem key={c.id} value={c.id}>{c.label}</SelectItem>
                 ))}
               </SelectContent>
