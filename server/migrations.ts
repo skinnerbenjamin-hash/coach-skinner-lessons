@@ -142,6 +142,9 @@ export function runMigrations(sqlite: DB) {
     // Free-text payment instructions shown to families on the booking page
     // and confirmation email ("Cash only — due at lesson", etc.).
     { col: "payment_note", def: "TEXT NOT NULL DEFAULT ''" },
+    // Per-tenant booking window controls (replaces hardcoded constants).
+    { col: "max_booking_days", def: "INTEGER NOT NULL DEFAULT 30" },
+    { col: "min_lead_hours",   def: "INTEGER NOT NULL DEFAULT 24" },
   ];
   for (const { col, def } of tenantBrandingCols) {
     if (!columnExists(sqlite, "tenants", col)) {
@@ -446,6 +449,27 @@ export function runMigrations(sqlite: DB) {
   // renders "$60 / 30 min" etc.; we do NOT charge anything online.
   if (tableExists(sqlite, "lesson_types") && !columnExists(sqlite, "lesson_types", "price_cents")) {
     sqlite.exec(`ALTER TABLE lesson_types ADD COLUMN price_cents INTEGER`);
+  }
+
+  // ---- Password reset tokens (forgot-password flow) -------------------
+  // One short-lived (1h) single-use token per request. We store the SHA-256
+  // hash of the token, not the token itself, so a leaked DB can't be used to
+  // reset a password.  The plaintext token lives only in the email link.
+  if (!tableExists(sqlite, "password_reset_tokens")) {
+    sqlite.exec(`
+      CREATE TABLE password_reset_tokens (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tenant_id INTEGER NOT NULL,
+        admin_user_id INTEGER NOT NULL,
+        token_hash TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL,
+        used_at INTEGER
+      )
+    `);
+    sqlite.exec(
+      `CREATE INDEX IF NOT EXISTS prt_token_hash_idx ON password_reset_tokens(token_hash)`
+    );
   }
 
   // ---- 10. Waitlist (Phase 2) -----------------------------------------

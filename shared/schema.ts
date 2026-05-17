@@ -40,6 +40,13 @@ export const tenants = sqliteTable("tenants", {
   // email (e.g. "Cash only — due at lesson", "Cash or Venmo @CoachX"). Empty
   // string = no payment block displayed.
   paymentNote: text("payment_note").notNull().default(""),
+  // How far ahead customers can book (days from today). Default 30. Coaches
+  // can tighten or loosen via Branding admin panel. Admins always bypass this.
+  maxBookingDays: integer("max_booking_days").notNull().default(30),
+  // Minimum hours of notice before a lesson (and to cancel/reschedule). Default
+  // 24. Coaches who allow same-day booking can set this to 0; coaches who need
+  // more notice can raise it (e.g. 48).
+  minLeadHours: integer("min_lead_hours").notNull().default(24),
   contactLocation: text("contact_location").notNull().default(""),// freeform "Greenwood, IN" etc.
   // ---- Label vocabulary (replaces hardcoded "parent"/"player" everywhere) ----
   bookerLabel: text("booker_label").notNull().default("Parent"),   // "Parent" | "Client" | "Student" | "Member"

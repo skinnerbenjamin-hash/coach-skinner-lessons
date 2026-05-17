@@ -90,6 +90,8 @@ function AdminLogin() {
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
+  const [showForgot, setShowForgot] = useState(false);
+  const [forgotId, setForgotId] = useState("");
 
   const login = useMutation({
     mutationFn: async () => {
@@ -100,6 +102,29 @@ function AdminLogin() {
     },
     onError: (e: any) => {
       toast({ title: "Sign-in failed", description: e?.message?.replace(/^\d+:\s*/, "") || "Try again", variant: "destructive" });
+    },
+  });
+
+  const forgot = useMutation({
+    mutationFn: async (identifier: string) => {
+      await apiRequest("POST", "/api/auth/forgot", { identifier });
+    },
+    onSuccess: () => {
+      toast({
+        title: "Check your email",
+        description: "If that account exists, a reset email is on its way. The link expires in 1 hour.",
+      });
+      setShowForgot(false);
+      setForgotId("");
+    },
+    onError: () => {
+      // Still show the generic message — no user enumeration.
+      toast({
+        title: "Check your email",
+        description: "If that account exists, a reset email is on its way. The link expires in 1 hour.",
+      });
+      setShowForgot(false);
+      setForgotId("");
     },
   });
 
@@ -160,6 +185,57 @@ function AdminLogin() {
               {login.isPending ? "Signing in…" : "Sign in"}
             </Button>
           </form>
+          {!showForgot ? (
+            <div className="text-center pt-1">
+              <button
+                type="button"
+                className="text-xs text-muted-foreground hover:text-foreground underline underline-offset-2"
+                onClick={() => setShowForgot(true)}
+                data-testid="button-show-forgot"
+              >
+                Forgot password?
+              </button>
+            </div>
+          ) : (
+            <form
+              className="space-y-2 border-t pt-3"
+              onSubmit={(e) => {
+                e.preventDefault();
+                if (!forgotId.trim()) return;
+                forgot.mutate(forgotId.trim());
+              }}
+            >
+              <Label htmlFor="forgot-id" className="text-sm">Phone or email on file</Label>
+              <Input
+                id="forgot-id"
+                value={forgotId}
+                onChange={(e) => setForgotId(e.target.value)}
+                placeholder="9079527860 or you@example.com"
+                data-testid="input-forgot-id"
+              />
+              <p className="text-xs text-muted-foreground">
+                We'll email a reset link to your account's contact email. Link expires in 1 hour.
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  type="submit"
+                  className="flex-1"
+                  disabled={forgot.isPending || !forgotId.trim()}
+                  data-testid="button-forgot-submit"
+                >
+                  {forgot.isPending ? "Sending…" : "Send reset link"}
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => { setShowForgot(false); setForgotId(""); }}
+                  data-testid="button-forgot-cancel"
+                >
+                  Cancel
+                </Button>
+              </div>
+            </form>
+          )}
         </CardContent>
       </Card>
     </div>
@@ -2185,6 +2261,8 @@ type Branding = {
   bookerLabel: string;
   attendeeLabel: string;
   paymentNote: string;
+  maxBookingDays: number;
+  minLeadHours: number;
   plan: string;
   trialEndsAt: number | null;
 };
@@ -2567,6 +2645,43 @@ function BrandingPanel() {
           </div>
           <div className="text-xs text-muted-foreground italic">
             Example: "{merged.bookerLabel || "Parent"} name" + "{merged.attendeeLabel || "Player"} name" on the booking form.
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardContent className="p-6 space-y-3">
+          <h2 className="text-base font-semibold">Booking window</h2>
+          <p className="text-xs text-muted-foreground">
+            Controls how far in advance customers can book, and the minimum notice required to book, cancel, or reschedule.
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label htmlFor="b-max-days">Max days ahead</Label>
+              <Input
+                id="b-max-days"
+                type="number"
+                min={1}
+                max={365}
+                value={merged.maxBookingDays ?? 30}
+                onChange={e => set("maxBookingDays", Number(e.target.value))}
+                data-testid="input-branding-max-days"
+              />
+              <p className="text-xs text-muted-foreground">Default 30. Maximum 365.</p>
+            </div>
+            <div className="space-y-1">
+              <Label htmlFor="b-min-hours">Min hours before lesson</Label>
+              <Input
+                id="b-min-hours"
+                type="number"
+                min={0}
+                max={168}
+                value={merged.minLeadHours ?? 24}
+                onChange={e => set("minLeadHours", Number(e.target.value))}
+                data-testid="input-branding-min-hours"
+              />
+              <p className="text-xs text-muted-foreground">Default 24. Set to 0 to allow same-day bookings.</p>
+            </div>
           </div>
         </CardContent>
       </Card>

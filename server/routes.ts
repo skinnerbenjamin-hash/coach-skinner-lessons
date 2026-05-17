@@ -24,6 +24,7 @@ import {
   seedDefaultAdmin, checkLogin, logout, requireAdmin, isAuthed,
   setSessionCookie, clearSessionCookie, getTokenFromReq, updateCredentials, getAdminPhone,
   listAdminUsers, addAdminUser, deleteAdminUser, getSessionTenantId,
+  createResetToken, consumeResetToken,
 } from "./auth";
 import { checkSlug, createTenantAndOwner } from "./signup";
 import { insertResourceSchema, RESOURCE_CATEGORIES, insertLessonTypeSchema } from "@shared/schema";
@@ -33,9 +34,25 @@ seedDefaultAdmin("9079527860", "1qaz!QAZ");
 
 const SLOT_MIN = 30;
 const MAX_GAP_MIN = 30;          // gaps <= this between busy blocks count as "orphan"
-const CANCEL_WINDOW_MS = 24 * 60 * 60 * 1000; // 24h cutoff
-const MAX_BOOKING_DAYS = 30; // customers can book up to ~1 month ahead
-const MAX_BOOKING_WINDOW_MS = MAX_BOOKING_DAYS * 24 * 60 * 60 * 1000;
+// Default booking window when a tenant row is missing the per-tenant overrides.
+// Each tenant has its own max_booking_days (how far ahead customers can book)
+// and min_lead_hours (minimum notice before lesson start) — see tenants schema.
+const DEFAULT_MAX_BOOKING_DAYS = 30;
+const DEFAULT_MIN_LEAD_HOURS = 24;
+function tenantMaxBookingDays(req: any): number {
+  const v = req?.tenant?.max_booking_days;
+  return typeof v === "number" && v > 0 ? v : DEFAULT_MAX_BOOKING_DAYS;
+}
+function tenantMinLeadHours(req: any): number {
+  const v = req?.tenant?.min_lead_hours;
+  return typeof v === "number" && v >= 0 ? v : DEFAULT_MIN_LEAD_HOURS;
+}
+function tenantMaxBookingWindowMs(req: any): number {
+  return tenantMaxBookingDays(req) * 24 * 60 * 60 * 1000;
+}
+function tenantMinLeadMs(req: any): number {
+  return tenantMinLeadHours(req) * 60 * 60 * 1000;
+}
 
 // --- Uploads (photos for Phase 1) ---
 const UPLOAD_DIR = process.env.UPLOAD_DIR || "./uploads";
@@ -428,14 +445,14 @@ function icsForBookings(rows: BookingWithProfile[]) {
   return lines.join("\r\n");
 }
 
-function isWithin24h(iso: string): boolean {
+function isInsideLeadWindow(iso: string, leadMs: number): boolean {
   const start = isoToLocalDate(iso).getTime();
-  return start - Date.now() < CANCEL_WINDOW_MS;
+  return start - Date.now() < leadMs;
 }
 
-function isBeyondMaxWindow(iso: string): boolean {
+function isBeyondMaxWindow(iso: string, maxWindowMs: number): boolean {
   const start = isoToLocalDate(iso).getTime();
-  return start - Date.now() > MAX_BOOKING_WINDOW_MS;
+  return start - Date.now() > maxWindowMs;
 }
 
 export async function registerRoutes(httpServer: Server, app: Express): Promise<Server> {
@@ -464,6 +481,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       contactPhone: req.tenant?.contact_phone ?? null,
       contactEmail: req.tenant?.contact_email ?? null,
       paymentNote: req.tenant?.payment_note ?? "",
+      maxBookingDays: req.tenant?.max_booking_days ?? 30,
+      minLeadHours: req.tenant?.min_lead_hours ?? 24,
       contactLocation: req.tenant?.contact_location ?? null,
       bookerLabel: req.tenant?.booker_label ?? null,
       attendeeLabel: req.tenant?.attendee_label ?? null,
@@ -501,6 +520,73 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     setSessionCookie(res, result.token);
     res.json({ ok: true });
   });
+
+  // --- Forgot password ---
+  // Sends a one-time reset link to the tenant's contact_email.  Always responds
+  // 200 OK regardless of whether the admin exists (no user enumeration).
+  // Identifier can be a phone number or an email address; we'll try both.
+  app.post("/api/auth/forgot", async (req, res) => {
+    const tenantId = requireTenantId(req, res);
+    if (tenantId === null) return;
+    const identifier = String(req.body?.identifier || "").trim();
+    if (!identifier) return res.json({ ok: true });
+    try {
+      const result = createResetToken(tenantId, identifier);
+      if (result) {
+        const tenant = req.tenant;
+        const slug = tenant?.slug || "";
+        // Reset URL points back to this subdomain with token in the query string.
+        // App uses hash routing, but the page parses window.location.search.
+        const proto = (req.headers["x-forwarded-proto"] as string) || "https";
+        const host = req.headers.host || `${slug}.lessonspot.app`;
+        const resetUrl = `${proto}://${host}/?token=${encodeURIComponent(result.token)}#/reset`;
+        // Pick the destination email: tenant contact_email is the default; if
+        // empty, fall back to the identifier when it looks like an email.
+        let to = String(tenant?.contact_email || "").trim();
+        if (!to && /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(identifier)) to = identifier;
+        if (to) {
+          const name = tenant?.name || "LessonSpot";
+          const subject = `Reset your ${name} admin password`;
+          const html = `
+            <p>Hi,</p>
+            <p>We received a request to reset the admin password for <strong>${name}</strong>.</p>
+            <p>Click the link below to choose a new password. This link expires in 1 hour and can only be used once.</p>
+            <p><a href="${resetUrl}" style="display:inline-block;padding:10px 16px;background:#0ea5e9;color:#fff;text-decoration:none;border-radius:6px">Reset password</a></p>
+            <p style="color:#666;font-size:12px">Or paste this link into your browser:<br>${resetUrl}</p>
+            <hr>
+            <p style="color:#666;font-size:12px">If you didn't request this, you can safely ignore this email.</p>
+          `;
+          const text = `Reset your ${name} admin password\n\nOpen this link to choose a new password (expires in 1 hour, single use):\n${resetUrl}\n\nIf you didn't request this, ignore this email.`;
+          const sendResult = await sendEmail({ to, subject, html, text });
+          if (!sendResult.ok) {
+            console.error("forgot-password email failed:", sendResult.error);
+          }
+        } else {
+          console.warn(`forgot-password: no destination email for tenant ${tenantId}`);
+        }
+      }
+    } catch (err: any) {
+      console.error("forgot-password error:", err?.message || err);
+    }
+    // Always return ok — no user enumeration.
+    res.json({ ok: true });
+  });
+
+  // --- Reset password ---
+  // Consumes a reset token and sets a new password.  All sessions for the
+  // tenant are invalidated, so the user must log in again with the new password.
+  app.post("/api/auth/reset", (req, res) => {
+    const token = String(req.body?.token || "");
+    const password = String(req.body?.password || "");
+    if (!token) return res.status(400).json({ ok: false, error: "Reset link is missing or invalid." });
+    if (!password || password.length < 6) {
+      return res.status(400).json({ ok: false, error: "Password must be at least 6 characters." });
+    }
+    const result = consumeResetToken(token, password);
+    if (!result.ok) return res.status(400).json({ ok: false, error: result.error });
+    res.json({ ok: true });
+  });
+
   // ===== Self-serve signup =====
   // Public endpoints (no requireAdmin) — anyone can create a new tenant.
   // Both endpoints are intentionally rate-limit-free at this stage; we'll add
@@ -786,11 +872,12 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const start = String(req.query.start || "");
     const end = String(req.query.end || "");
     if (!start || !end) return res.status(400).json({ error: "start and end required" });
-    // Cap end at MAX_BOOKING_DAYS from now for non-admin requests
+    // Cap end at this tenant's max booking window for non-admin requests
     const isAdmin = !!(req as any).session?.admin;
+    const maxWindowMs = tenantMaxBookingWindowMs(req);
     let effectiveEnd = end;
     if (!isAdmin) {
-      const maxEndMs = Date.now() + MAX_BOOKING_WINDOW_MS;
+      const maxEndMs = Date.now() + maxWindowMs;
       const requestedEndMs = new Date(end).getTime();
       if (requestedEndMs > maxEndMs) {
         effectiveEnd = new Date(maxEndMs).toISOString();
@@ -817,7 +904,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     res.json({
       days: availabilityForRange(tenantId, start, effectiveEnd, forLessonType),
-      maxBookingDays: MAX_BOOKING_DAYS,
+      maxBookingDays: tenantMaxBookingDays(req),
+      minLeadHours: tenantMinLeadHours(req),
       // Phase 2: surface tenant-level toggles so the booking page can decide
       // whether to render 'Join waitlist' on full slots.
       waitlistEnabled: (getSetting("waitlistEnabled") || "1") === "1",
@@ -858,12 +946,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const isAdmin = isAdminReq(req);
     // upsert profile (primary booker)
     const profile = storage.upsertProfile(tenantId, { phone: normalizePhone(phone), email, parentName, playerName, notes });
-    // Customers can't book inside 24h or beyond MAX_BOOKING_DAYS; admins bypass both.
-    if (!isAdmin && slots.some(s => isWithin24h(s))) {
-      return res.status(400).json({ error: "Bookings must be at least 24 hours in advance." });
+    // Customers can't book inside the lead window or beyond the max booking
+    // window. Admins bypass both. Both values are per-tenant (set in Branding).
+    const leadMs = tenantMinLeadMs(req);
+    const leadHrs = tenantMinLeadHours(req);
+    const maxDays = tenantMaxBookingDays(req);
+    const maxMs = tenantMaxBookingWindowMs(req);
+    if (!isAdmin && slots.some(s => isInsideLeadWindow(s, leadMs))) {
+      return res.status(400).json({
+        error: leadHrs === 0
+          ? "Bookings must be in the future."
+          : `Bookings must be at least ${leadHrs} hour${leadHrs === 1 ? "" : "s"} in advance.`,
+      });
     }
-    if (!isAdmin && slots.some(s => isBeyondMaxWindow(s))) {
-      return res.status(400).json({ error: `Bookings can be made up to ${MAX_BOOKING_DAYS} days in advance.` });
+    if (!isAdmin && slots.some(s => isBeyondMaxWindow(s, maxMs))) {
+      return res.status(400).json({ error: `Bookings can be made up to ${maxDays} days in advance.` });
     }
     // Resolve lesson type and enforce capacity for group bookings.
     let resolvedLessonTypeId: number | null = null;
@@ -1181,8 +1278,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const isAdmin = String(req.query.admin || "") === "1";
     const b = storage.getBookingById(tenantId, id);
     if (!b) return res.status(404).json({ error: "Not found" });
-    if (!isAdmin && isWithin24h(b.start)) {
-      return res.status(400).json({ error: "Within 24 hours — please contact the coach to cancel." });
+    {
+      const leadHrs = tenantMinLeadHours(req);
+      const leadMs = tenantMinLeadMs(req);
+      if (!isAdmin && isInsideLeadWindow(b.start, leadMs)) {
+        return res.status(400).json({ error: leadHrs === 0
+          ? "This booking is in the past."
+          : `Within ${leadHrs} hour${leadHrs === 1 ? "" : "s"} — please contact the coach to cancel.` });
+      }
     }
     // Capture profile/details before delete so we can email
     const profile = storage.getProfileById(tenantId, b.profileId);
@@ -1342,14 +1445,22 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const isAdmin = String(req.query.admin || "") === "1";
     const b = storage.getBookingById(tenantId, id);
     if (!b) return res.status(404).json({ error: "Not found" });
-    if (!isAdmin && isWithin24h(b.start)) {
-      return res.status(400).json({ error: "Within 24 hours — please contact the coach to reschedule." });
+    const _leadHrs = tenantMinLeadHours(req);
+    const _leadMs = tenantMinLeadMs(req);
+    const _maxDays = tenantMaxBookingDays(req);
+    const _maxMs = tenantMaxBookingWindowMs(req);
+    if (!isAdmin && isInsideLeadWindow(b.start, _leadMs)) {
+      return res.status(400).json({ error: _leadHrs === 0
+        ? "This booking has already started."
+        : `Within ${_leadHrs} hour${_leadHrs === 1 ? "" : "s"} — please contact the coach to reschedule.` });
     }
-    if (!isAdmin && isWithin24h(newStart)) {
-      return res.status(400).json({ error: "New time must be at least 24 hours from now." });
+    if (!isAdmin && isInsideLeadWindow(newStart, _leadMs)) {
+      return res.status(400).json({ error: _leadHrs === 0
+        ? "New time must be in the future."
+        : `New time must be at least ${_leadHrs} hour${_leadHrs === 1 ? "" : "s"} from now.` });
     }
-    if (!isAdmin && isBeyondMaxWindow(newStart)) {
-      return res.status(400).json({ error: `New time must be within ${MAX_BOOKING_DAYS} days.` });
+    if (!isAdmin && isBeyondMaxWindow(newStart, _maxMs)) {
+      return res.status(400).json({ error: `New time must be within ${_maxDays} days.` });
     }
     // collision
     const existing = storage.getBookingsByStarts(tenantId, [newStart]).filter(x => x.id !== id);
@@ -1435,6 +1546,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       contactPhone: t.contact_phone,
       contactEmail: t.contact_email,
       paymentNote: t.payment_note ?? "",
+      maxBookingDays: t.max_booking_days ?? 30,
+      minLeadHours: t.min_lead_hours ?? 24,
       contactLocation: t.contact_location,
       bookerLabel: t.booker_label,
       attendeeLabel: t.attendee_label,
@@ -1477,6 +1590,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       heroFocalX: { col: "hero_focal_x", min: 0, max: 100 },
       heroFocalY: { col: "hero_focal_y", min: 0, max: 100 },
       heroZoom:   { col: "hero_zoom",    min: 100, max: 300 },
+      // Booking window controls (per-tenant). Caps prevent abuse:
+      //   max_booking_days: 1…365 (1 day to 1 year ahead)
+      //   min_lead_hours: 0…168 (same-day to 1 week notice)
+      maxBookingDays: { col: "max_booking_days", min: 1, max: 365 },
+      minLeadHours:   { col: "min_lead_hours",   min: 0, max: 168 },
     };
     for (const [bodyKey, cfg] of Object.entries(numFields)) {
       const v = body[bodyKey];

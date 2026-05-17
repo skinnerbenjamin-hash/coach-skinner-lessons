@@ -9,6 +9,7 @@ import NotFound from "@/pages/not-found";
 import Book from "@/pages/Book";
 import MyAppointments from "@/pages/MyAppointments";
 import Admin from "@/pages/Admin";
+import ResetPassword from "@/pages/ResetPassword";
 import Resources from "@/pages/Resources";
 import Signup from "@/pages/Signup";
 import Marketing from "@/pages/Marketing";
@@ -88,6 +89,7 @@ function AppRouter() {
       <Switch>
         <Route path="/signup" component={Signup} />
         <Route path="/admin" component={Admin} />
+        <Route path="/reset" component={ResetPassword} />
         <Route path="/">
           {tenantResolved ? <Book /> : tenantLoading ? <LoadingScreen /> : <SiteNotFound host={tenant?.host} />}
         </Route>

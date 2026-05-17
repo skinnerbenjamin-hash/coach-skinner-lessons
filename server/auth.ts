@@ -164,6 +164,107 @@ export function getAdminPhone(): string {
   return row?.phone || "";
 }
 
+// --- Password reset (forgot-password) ---
+// We issue a single-use, 1-hour reset token. The plaintext token goes only
+// into the email link; we store SHA-256(token) in the DB so a leaked DB
+// can't be used to forge resets. Token format: 32 bytes hex (64 chars).
+const RESET_TOKEN_TTL_MS = 60 * 60 * 1000; // 1 hour
+
+function sha256Hex(s: string): string {
+  const h = createHmac("sha256", "lessonspot-reset").update(s).digest("hex");
+  return h;
+}
+
+// Look up an admin user (multi-admin table) by tenant + (phone OR email).
+// We accept either so the user can recover without remembering which they
+// used. Returns the row or null.
+function findAdminForReset(tenantId: number, identifier: string): { id: number; tenant_id: number; phone: string } | null {
+  const ident = (identifier || "").trim();
+  if (!ident) return null;
+  // Try as phone first (digits-only match).
+  const np = normalizePhone(ident);
+  if (np && np.length >= 7) {
+    const row = sqlite.prepare(
+      `SELECT id, tenant_id, phone FROM admin_users WHERE tenant_id=? AND phone=?`
+    ).get(tenantId, np) as any;
+    if (row) return row;
+  }
+  // Otherwise try as email -> look up the tenant's contact_email and match
+  // any admin whose phone is associated with that. Simpler: we look up the
+  // tenant row to find its contact_email; if it matches the identifier we
+  // pick the OWNER admin for that tenant.
+  if (ident.includes("@")) {
+    const tenantRow = sqlite.prepare(
+      `SELECT id, contact_email FROM tenants WHERE id=?`
+    ).get(tenantId) as any;
+    if (tenantRow && String(tenantRow.contact_email || "").toLowerCase() === ident.toLowerCase()) {
+      const owner = sqlite.prepare(
+        `SELECT id, tenant_id, phone FROM admin_users WHERE tenant_id=? AND is_owner=1 LIMIT 1`
+      ).get(tenantId) as any;
+      if (owner) return owner;
+    }
+  }
+  return null;
+}
+
+// Create a reset token for the given admin and return the plaintext token.
+// Invalidates any previous unused tokens for that admin (only the newest is
+// usable, so re-clicking "Forgot password" can't pile up valid tokens).
+export function createResetToken(tenantId: number, identifier: string): { token: string; adminUserId: number; phone: string } | null {
+  const admin = findAdminForReset(tenantId, identifier);
+  if (!admin) return null;
+  // Invalidate older unused tokens for this admin.
+  sqlite.prepare(
+    `UPDATE password_reset_tokens SET used_at=? WHERE admin_user_id=? AND used_at IS NULL`
+  ).run(Date.now(), admin.id);
+  const token = randomBytes(32).toString("hex");
+  const tokenHash = sha256Hex(token);
+  const now = Date.now();
+  sqlite.prepare(
+    `INSERT INTO password_reset_tokens (tenant_id, admin_user_id, token_hash, created_at, expires_at) VALUES (?, ?, ?, ?, ?)`
+  ).run(admin.tenant_id, admin.id, tokenHash, now, now + RESET_TOKEN_TTL_MS);
+  return { token, adminUserId: admin.id, phone: admin.phone };
+}
+
+// Consume a reset token and set a new password. Returns true on success,
+// false if the token is invalid/expired/used or the new password is too short.
+export function consumeResetToken(token: string, newPassword: string): { ok: true; tenantId: number; phone: string } | { ok: false; error: string } {
+  if (!token || typeof token !== "string") return { ok: false, error: "Invalid link." };
+  if (!newPassword || newPassword.length < 6) return { ok: false, error: "Password must be at least 6 characters." };
+  const tokenHash = sha256Hex(token);
+  const row = sqlite.prepare(
+    `SELECT id, tenant_id, admin_user_id, expires_at, used_at FROM password_reset_tokens WHERE token_hash=?`
+  ).get(tokenHash) as any;
+  if (!row) return { ok: false, error: "This reset link is invalid or has already been used." };
+  if (row.used_at) return { ok: false, error: "This reset link has already been used." };
+  if (row.expires_at < Date.now()) return { ok: false, error: "This reset link has expired. Please request a new one." };
+  // Update the admin's password.
+  const salt = randomBytes(16).toString("hex");
+  const hash = hashPassword(newPassword, salt);
+  const now = Date.now();
+  const adminRow = sqlite.prepare(
+    `SELECT phone, tenant_id, is_owner FROM admin_users WHERE id=?`
+  ).get(row.admin_user_id) as any;
+  if (!adminRow) return { ok: false, error: "Account not found." };
+  sqlite.prepare(
+    `UPDATE admin_users SET salt=?, hash=?, updated_at=? WHERE id=?`
+  ).run(salt, hash, now, row.admin_user_id);
+  // Also keep the legacy admin_credentials row in sync when this is the
+  // tenant-1 owner (so the old single-admin login path still works).
+  if (adminRow.tenant_id === 1 && adminRow.is_owner) {
+    sqlite.prepare(
+      `UPDATE admin_credentials SET salt=?, hash=?, updated_at=? WHERE id=1`
+    ).run(salt, hash, now);
+  }
+  // Mark token used.
+  sqlite.prepare(
+    `UPDATE password_reset_tokens SET used_at=? WHERE id=?`
+  ).run(now, row.id);
+  // Invalidate ALL existing sessions for this admin's tenant (forces re-login).
+  sqlite.prepare(`DELETE FROM admin_sessions WHERE tenant_id=?`).run(adminRow.tenant_id);
+  return { ok: true, tenantId: adminRow.tenant_id, phone: adminRow.phone };
+}
+
 // --- Login / sessions ---
 // tenantId is the host-resolved tenant; we only let an admin log in to their
 // own tenant (so a Skinner admin hitting demo.lessonspot.app cannot become an
