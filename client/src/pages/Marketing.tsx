@@ -14,14 +14,11 @@ import { Check, CalendarDays, Users, BellRing, ShieldCheck, ArrowRight, MessageS
 
 // Demo tenants seeded server-side at boot (see server/seedDemoTenants.ts).
 // Each card links to demo-<sport>.lessonspot.app so visitors can poke around a
-// realistic booking page before they sign up.
+// realistic booking page before they sign up.  Softball is featured first —
+// it's the primary niche we're targeting.  Other-sport demos remain in the
+// database but are not shown on the marketing page during the focused launch.
 const DEMO_SPORTS: { slug: string; label: string; tagline: string; emoji: string }[] = [
-  { slug: "demo-softball",  label: "Softball",      tagline: "Hitting, pitching, group clinics", emoji: "\u{1F94E}" },
-  { slug: "demo-tennis",    label: "Tennis",        tagline: "Privates, semi-privates, clinics", emoji: "\u{1F3BE}" },
-  { slug: "demo-golf",      label: "Golf",          tagline: "Range, short game, playing lessons", emoji: "\u{26F3}" },
-  { slug: "demo-music",     label: "Music lessons", tagline: "Piano, guitar, voice", emoji: "\u{1F3B5}" },
-  { slug: "demo-tutoring",  label: "Tutoring",      tagline: "Math, reading, test prep", emoji: "\u{1F4DA}" },
-  { slug: "demo-wrestling", label: "Wrestling",     tagline: "Privates, practices, open mat", emoji: "\u{1F93C}" },
+  { slug: "demo-softball", label: "Softball example", tagline: "Hitting, pitching, group clinics", emoji: "\u{1F94E}" },
 ];
 
 export default function Marketing() {
@@ -81,15 +78,16 @@ export default function Marketing() {
       <section className="mx-auto max-w-6xl px-4 sm:px-6 py-16 sm:py-24">
         <div className="max-w-3xl">
           <p className="text-sm uppercase tracking-wide text-primary mb-3">
-            For coaches, teachers, and trainers
+            For baseball and softball coaches
           </p>
           <h1 className="text-3xl sm:text-5xl font-bold tracking-tight leading-tight">
-            Your own booking site. Live in a minute.
+            Booking software built for the cages and the diamond.
           </h1>
           <p className="mt-6 text-lg text-muted-foreground">
-            Stop juggling DMs and group chats. LessonSpot gives you a clean,
-            branded booking page at <span className="font-semibold">your-name.lessonspot.app</span> — set your hours,
-            add lesson types, and let families pick a time.
+            Stop juggling DMs and group chats with travel-ball parents. LessonSpot gives you a
+            branded booking page at <span className="font-semibold">your-name.lessonspot.app</span> —
+            set your cage hours, run hitting and pitching lessons, host group clinics, and keep
+            private notes with every family in one place.
           </p>
           <div className="mt-8 flex flex-col sm:flex-row gap-3">
             <Button size="lg" onClick={goSignup} data-testid="button-marketing-signup-hero">
@@ -115,27 +113,27 @@ export default function Marketing() {
 
       {/* Feature grid */}
       <section id="features" className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16 border-t">
-        <h2 className="text-2xl font-semibold mb-10">Everything you need to run lessons</h2>
+        <h2 className="text-2xl font-semibold mb-10">Everything you need to run a lessons program</h2>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-6">
           <FeatureCard
             icon={<Users className="w-5 h-5" />}
-            title="Group and 1-on-1 lessons"
-            body="Run privates, semi-privates, and group clinics on the same calendar. Mark each availability window as solo, group, or both, and the right slots show up for the right lesson type — with real capacity tracking and waitlists when a group fills up."
+            title="Group clinics and 1-on-1 lessons"
+            body="Run privates, semi-privates, and group clinics on the same calendar. Mark each cage or field window as solo, group, or both, and the right slots show up for the right lesson type — with real capacity tracking and waitlists when a group fills up."
           />
           <FeatureCard
             icon={<MessageSquare className="w-5 h-5" />}
-            title="Private notes thread per student"
-            body="Every player or student has their own private thread. Send specific feedback after a lesson, share a swing-fix video, and let the parent reply with questions or game footage. Nothing is shared with other families."
+            title="Private notes thread per player"
+            body="Every player has their own private thread. Send specific feedback after a lesson, share a swing-fix video, and let parents reply with questions or game footage. Nothing is shared with other families."
           />
           <FeatureCard
             icon={<Library className="w-5 h-5" />}
             title="Resource library"
-            body="Build a library of drills, instructional videos, PDFs, and links your students can access any time. Organize by skill area — hitting, footwork, theory, test prep — whatever fits your program."
+            body="Build a library of drills, instructional videos, PDFs, and links your players can access any time. Organize by hitting, pitching, fielding, catching, baserunning — whatever skill areas you teach."
           />
           <FeatureCard
             icon={<CalendarDays className="w-5 h-5" />}
             title="Smart availability"
-            body="Set weekly hours and one-off overrides. Duration-aware slots fit 30-minute and one-hour lessons on the same calendar without double-booking."
+            body="Set weekly cage hours and one-off overrides for tournaments or rain-outs. Duration-aware slots fit 30-minute hitting and one-hour pitching lessons on the same calendar without double-booking."
           />
           <FeatureCard
             icon={<BellRing className="w-5 h-5" />}
@@ -155,12 +153,12 @@ export default function Marketing() {
         </div>
       </section>
 
-      {/* See it for your sport */}
+      {/* See it in action */}
       <section id="demos" className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16 border-t">
         <div className="max-w-2xl mb-10">
-          <h2 className="text-2xl font-semibold mb-3">See it for your sport</h2>
+          <h2 className="text-2xl font-semibold mb-3">See it in action</h2>
           <p className="text-muted-foreground">
-            Pick a category and open a live preview of a LessonSpot booking page. Lesson types, hours, and branding are sport-specific so you can see what yours could look like.
+            Open a live example booking page to see exactly what your families would see — lesson types, calendar, group clinics, the works.
           </p>
         </div>
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -190,7 +188,9 @@ export default function Marketing() {
           ))}
         </div>
         <p className="mt-6 text-sm text-muted-foreground">
-          These are example sites. To make your own, start a free trial — it takes about a minute.
+          Coaching a different sport? LessonSpot works for any kind of lessons —
+          {" "}<button onClick={goSignup} className="underline hover:text-foreground" data-testid="button-demos-other-sports">start a free trial</button>{" "}
+          and customize lesson types, labels, and categories to fit your program.
         </p>
       </section>
 
