@@ -285,10 +285,13 @@ function AddBookingDialog() {
   const members = membersData?.profiles ?? [];
   // Coach selector — only shown when 2+ lesson-givers. Default to first coach
   // when the dialog opens so the server always gets an explicit assignment.
+  // staleTime: 0 + refetchOnMount so flipping a coach's gives_lessons flag in
+  // Team panel is reflected the next time this dialog opens.
   const { data: coachesData } = useQuery<AdminCoach[]>({
     queryKey: ["/api/coaches"],
     enabled: open,
-    staleTime: 60_000,
+    staleTime: 0,
+    refetchOnMount: "always",
   });
   const coaches: AdminCoach[] = coachesData ?? [];
   const showCoachPicker = coaches.length >= 2;
@@ -2158,6 +2161,7 @@ function TeamPanel() {
     onSuccess: () => {
       setPhone(""); setName(""); setEmail(""); setPassword(""); setGivesLessons(false); setReceivesEmails(false);
       qc.invalidateQueries({ queryKey: ["/api/admin/team"] });
+      qc.invalidateQueries({ queryKey: ["/api/coaches"] });
       toast({ title: "Admin added", description: "They can now sign in at /#/admin with their phone and password." });
     },
     onError: (e: any) => toast({ variant: "destructive", title: "Couldn't add admin", description: e?.message?.replace(/^\d+:\s*/, "") }),
@@ -2167,6 +2171,7 @@ function TeamPanel() {
     mutationFn: async (id: number) => { await apiRequest("DELETE", `/api/admin/team/${id}`); },
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["/api/admin/team"] });
+      qc.invalidateQueries({ queryKey: ["/api/coaches"] });
       toast({ title: "Admin removed" });
     },
     onError: (e: any) => toast({ variant: "destructive", title: "Couldn't remove", description: e?.message?.replace(/^\d+:\s*/, "") }),
@@ -2297,7 +2302,7 @@ function TeamPanel() {
                     <EditAdminDialog
                       admin={a}
                       onClose={() => setEditingAdmin(null)}
-                      onSaved={() => { setEditingAdmin(null); qc.invalidateQueries({ queryKey: ["/api/admin/team"] }); }}
+                      onSaved={() => { setEditingAdmin(null); qc.invalidateQueries({ queryKey: ["/api/admin/team"] }); qc.invalidateQueries({ queryKey: ["/api/coaches"] }); }}
                     />
                   )}
                 </Dialog>
