@@ -7,7 +7,7 @@
 // In local dev (no subdomain available) we stay on the same host and let the
 // fresh session cookie carry the new tenant id.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // Same trick used elsewhere in the app: deploy_website rewrites __PORT_5000__
 // to the proxied path in prod.  In dev it stays as the literal string and we
@@ -57,9 +57,17 @@ export default function Signup() {
   const [email, setEmail] = useState("");
   const [phone, setPhone] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [sport, setSport] = useState("softball");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Per-field errors so the user can SEE why the form is invalid instead of
+  // just staring at a disabled button.  We populate this in handleSubmit's
+  // pre-flight check, not on every keystroke -- that would be too noisy.
+  const [fieldErrors, setFieldErrors] = useState<{
+    name?: string; slug?: string; email?: string; phone?: string;
+    password?: string; confirmPassword?: string;
+  }>({});
   const [done, setDone] = useState<{ slug: string; adminUrl: string; trialEndsAt: number } | null>(null);
   const [slugStatus, setSlugStatus] = useState<SlugStatus>({ state: "idle" });
 
@@ -98,19 +106,31 @@ export default function Signup() {
     };
   }, [slug]);
 
-  const formValid = useMemo(() => {
-    return (
-      name.trim().length >= 2 &&
-      slugStatus.state === "ok" &&
-      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) &&
-      phone.replace(/\D/g, "").length >= 7 &&
-      password.length >= 8
-    );
-  }, [name, slugStatus.state, email, phone, password]);
+  // Validate each field and return an errors object.  Empty object means OK.
+  function validate(): typeof fieldErrors {
+    const errs: typeof fieldErrors = {};
+    if (name.trim().length < 2) errs.name = "Enter your business name";
+    if (slugStatus.state !== "ok") {
+      errs.slug = slugStatus.state === "bad"
+        ? slugStatus.reason
+        : "Pick a subdomain";
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errs.email = "Enter a valid email";
+    if (phone.replace(/\D/g, "").length < 7) errs.phone = "Enter a valid phone number";
+    if (password.length < 8) errs.password = "At least 8 characters";
+    if (confirmPassword !== password) errs.confirmPassword = "Passwords don't match";
+    return errs;
+  }
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    if (!formValid || busy) return;
+    if (busy) return;
+    const errs = validate();
+    setFieldErrors(errs);
+    if (Object.keys(errs).length > 0) {
+      setError("Please fix the highlighted fields");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -122,6 +142,7 @@ export default function Signup() {
       const data = await r.json();
       if (!r.ok || !data.ok) {
         setError(data.error || "Could not create the account");
+        if (data.field) setFieldErrors({ [data.field]: data.error } as any);
         if (data.field === "slug") setSlugStatus({ state: "bad", reason: data.error });
         setBusy(false);
         return;
@@ -198,6 +219,9 @@ export default function Signup() {
                 placeholder="Coach Skinner Lessons"
                 autoComplete="organization"
               />
+              {fieldErrors.name && (
+                <p className="text-xs text-red-600 mt-1">{fieldErrors.name}</p>
+              )}
             </div>
 
             <div>
@@ -254,6 +278,9 @@ export default function Signup() {
                   placeholder="you@example.com"
                   autoComplete="email"
                 />
+                {fieldErrors.email && (
+                  <p className="text-xs text-red-600 mt-1">{fieldErrors.email}</p>
+                )}
               </div>
               <div>
                 <Label htmlFor="signup-phone">Phone</Label>
@@ -266,6 +293,9 @@ export default function Signup() {
                   placeholder="(317) 555-1234"
                   autoComplete="tel"
                 />
+                {fieldErrors.phone && (
+                  <p className="text-xs text-red-600 mt-1">{fieldErrors.phone}</p>
+                )}
               </div>
             </div>
 
@@ -280,6 +310,25 @@ export default function Signup() {
                 autoComplete="new-password"
                 placeholder="At least 8 characters"
               />
+              {fieldErrors.password && (
+                <p className="text-xs text-red-600 mt-1">{fieldErrors.password}</p>
+              )}
+            </div>
+
+            <div>
+              <Label htmlFor="signup-confirm-password">Confirm password</Label>
+              <Input
+                id="signup-confirm-password"
+                data-testid="input-signup-confirm-password"
+                type="password"
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                autoComplete="new-password"
+                placeholder="Type your password again"
+              />
+              {fieldErrors.confirmPassword && (
+                <p className="text-xs text-red-600 mt-1">{fieldErrors.confirmPassword}</p>
+              )}
             </div>
 
             <div>
@@ -308,7 +357,7 @@ export default function Signup() {
             <Button
               type="submit"
               className="w-full"
-              disabled={!formValid || busy}
+              disabled={busy}
               data-testid="button-signup-submit"
             >
               {busy ? "Creating your account…" : "Start free trial"}

@@ -23,7 +23,7 @@ import { getAllSettings, getSetting, setSettings, sendBookingEmail, sendEmail } 
 import {
   seedDefaultAdmin, checkLogin, logout, requireAdmin, isAuthed,
   setSessionCookie, clearSessionCookie, getTokenFromReq, updateCredentials, getAdminPhone,
-  listAdminUsers, addAdminUser, deleteAdminUser,
+  listAdminUsers, addAdminUser, deleteAdminUser, getSessionTenantId,
 } from "./auth";
 import { checkSlug, createTenantAndOwner } from "./signup";
 import { insertResourceSchema, RESOURCE_CATEGORIES, insertLessonTypeSchema } from "@shared/schema";
@@ -524,16 +524,37 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // (different host), and the new owner will need to log in once.  In dev
     // (localhost) the cookie stays valid because the host doesn't change.
     setSessionCookie(res, result.sessionToken);
+    // We also return the raw session token so the redirect URL can hand it off
+    // to the new subdomain (cookies set on lessonspot.app don't reach
+    // <slug>.lessonspot.app).  The new subdomain calls POST /api/auth/handoff
+    // with this token and re-sets the cookie on its own host.  Hash routing is
+    // used by the app, so we steer the URL at #/admin so it actually lands on
+    // the admin page instead of the public Book page.
     res.json({
       ok: true,
       slug: result.slug,
       tenantId: result.tenantId,
       trialEndsAt: result.trialEndsAt,
-      // The client uses this to redirect.  In production we point at
-      // `https://<slug>.lessonspot.app/admin`; in local dev we just stay put
-      // and rely on the cookie we just set.
-      adminUrl: `https://${result.slug}.lessonspot.app/admin`,
+      sessionToken: result.sessionToken,
+      adminUrl: `https://${result.slug}.lessonspot.app/?login=${result.sessionToken}#/admin`,
     });
+  });
+
+  // One-shot cross-subdomain login.  Signup hands the session token to the
+  // new subdomain via ?login=TOKEN; the SPA POSTs it here to swap it for a
+  // cookie on the new host.  We verify the token belongs to the tenant
+  // currently being served (so a stolen token can't be planted on a
+  // different tenant's site).
+  app.post("/api/auth/handoff", (req, res) => {
+    const tenantId = requireTenantId(req, res);
+    if (tenantId === null) return;
+    const token = String(req.body?.token || "");
+    if (!token) return res.status(400).json({ error: "token required" });
+    const sessionTenantId = getSessionTenantId(token);
+    if (sessionTenantId === null) return res.status(401).json({ error: "invalid token" });
+    if (sessionTenantId !== tenantId) return res.status(403).json({ error: "wrong tenant" });
+    setSessionCookie(res, token);
+    res.json({ ok: true });
   });
 
   app.post("/api/auth/logout", (req, res) => {
