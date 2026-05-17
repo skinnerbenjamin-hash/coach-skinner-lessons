@@ -16,19 +16,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
-import {
-  ArrowRight,
-  ExternalLink,
-  Check,
-  Play,
-  Eye,
-  Calendar,
-  Users,
-  Library,
-  MessageSquare,
-} from "lucide-react";
-
-const LIVE_DEMO_URL = "https://demo-softball.lessonspot.app";
+import { Check, Play } from "lucide-react";
 
 export default function Demo() {
   function goSignup() {
@@ -112,110 +100,62 @@ export default function Demo() {
             testId="video-demo-admin"
           />
         </div>
-        <div className="mt-10 flex flex-col sm:flex-row gap-3 justify-center items-center">
-          <a
-            href={LIVE_DEMO_URL}
-            target="_blank"
-            rel="noreferrer"
-            data-testid="link-demo-live"
-          >
-            <Button size="lg" className="text-base px-8 py-6 h-auto shadow-lg shadow-primary/20">
-              Try the live demo yourself
-              <ExternalLink className="w-4 h-4 ml-2" />
-            </Button>
-          </a>
-          <Button
-            size="lg"
-            variant="outline"
-            className="text-base px-8 py-6 h-auto"
-            onClick={goSignup}
-            data-testid="button-demo-signup-hero"
-          >
-            Start your free trial
-          </Button>
-        </div>
-        <p className="mt-4 text-sm text-muted-foreground text-center">
-          Click around, pick a time, fill in info — see exactly what your families would see.
-        </p>
       </section>
 
-      {/* What you saw */}
+      {/* Two options */}
       <section className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16 border-t">
-        <div className="text-center max-w-2xl mx-auto mb-12">
-          <h2 className="text-2xl sm:text-3xl font-semibold mb-3">What's in the walkthrough</h2>
-          <p className="text-muted-foreground">
-            Every screen above is the actual product. Yours would look the same with your branding,
-            your lesson types, and your schedule.
-          </p>
+        <div className="text-center mb-12">
+          <h2 className="text-2xl sm:text-3xl font-semibold mb-3">Ready when you are.</h2>
+          <p className="text-muted-foreground">Two ways to get started.</p>
         </div>
-        <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-6">
-          <FeatureTile
-            icon={<Calendar className="w-5 h-5" />}
-            title="Smart calendar"
-            body="Set your hours once. Duration-aware slots fit 30-min and 1-hour lessons on the same calendar without double-booking."
-          />
-          <FeatureTile
-            icon={<Users className="w-5 h-5" />}
-            title="Group + 1-on-1"
-            body="Run privates, semi-privates, and group clinics from the same calendar with real capacity tracking."
-          />
-          <FeatureTile
-            icon={<MessageSquare className="w-5 h-5" />}
-            title="Private threads"
-            body="Every athlete gets their own thread to share lesson notes, drill videos, and parent replies. Nothing is shared with other families."
-          />
-          <FeatureTile
-            icon={<Library className="w-5 h-5" />}
-            title="Resource library"
-            body="A 24/7 library of drills, instructional videos, and PDFs — organized by skill area you teach."
-          />
-        </div>
-      </section>
+        <div className="grid lg:grid-cols-2 gap-6 max-w-5xl mx-auto items-stretch">
+          {/* Option 1: free trial */}
+          <Card className="flex flex-col">
+            <CardContent className="pt-8 pb-8 flex-1 flex flex-col text-center sm:text-left">
+              <p className="text-sm uppercase tracking-wide text-primary font-semibold mb-3">
+                Option 1
+              </p>
+              <h3 className="text-2xl font-semibold mb-3">Start your free trial</h3>
+              <p className="text-muted-foreground leading-relaxed mb-6">
+                Build your own LessonSpot page in under 10 minutes. Pick a subdomain, set your
+                hours, add your lesson types — and start taking bookings today.
+              </p>
+              <ul className="space-y-3 text-sm mb-8">
+                <Bullet>14 days free — no card required</Bullet>
+                <Bullet>Your own page at your-name.lessonspot.app</Bullet>
+                <Bullet>Cancel any time</Bullet>
+              </ul>
+              <div className="mt-auto">
+                <Button
+                  size="lg"
+                  onClick={goSignup}
+                  className="w-full text-base py-6 h-auto"
+                  data-testid="button-demo-signup"
+                >
+                  Start free trial
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
 
-      {/* Lead capture */}
-      <section className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-20 border-t">
-        <div className="grid lg:grid-cols-2 gap-10 items-start max-w-5xl mx-auto">
-          <div>
-            <p className="text-sm uppercase tracking-wide text-primary mb-3">
-              Free 1-on-1 walkthrough
-            </p>
-            <h2 className="text-2xl sm:text-3xl font-semibold mb-4">
-              Want me to walk you through it personally?
-            </h2>
-            <p className="text-muted-foreground leading-relaxed mb-6">
-              Send your info and I'll personally reach out to schedule a quick screen-share. I'll
-              show you the admin side, answer your questions, and help you decide if LessonSpot is
-              a fit for your program.
-            </p>
-            <ul className="space-y-3 text-sm">
-              <Bullet>15-minute call, screen-share, zero pressure</Bullet>
-              <Bullet>I'll show you how to set up lesson types and hours</Bullet>
-              <Bullet>I'll answer "would this work for my program?"</Bullet>
-              <Bullet>14-day free trial — no card required to start</Bullet>
-            </ul>
-          </div>
-          <DemoRequestForm />
-        </div>
-      </section>
-
-      {/* Closing CTA */}
-      <section className="mx-auto max-w-6xl px-4 sm:px-6 py-16 sm:py-20 border-t">
-        <div className="max-w-2xl mx-auto text-center">
-          <h2 className="text-2xl sm:text-3xl font-semibold mb-4">
-            Or just start your own free trial.
-          </h2>
-          <p className="text-muted-foreground mb-8">
-            14 days free. No card. Build your page in under 10 minutes.
-          </p>
-          <Button
-            size="lg"
-            onClick={goSignup}
-            className="text-base px-8 py-6 h-auto"
-            data-testid="button-demo-signup-bottom"
-          >
-            Start free trial
-            <ArrowRight className="w-4 h-4 ml-2" />
-          </Button>
+          {/* Option 2: lead form */}
+          <Card className="flex flex-col border-primary/40">
+            <CardContent className="pt-8 pb-8 flex-1 flex flex-col text-center sm:text-left">
+              <p className="text-sm uppercase tracking-wide text-primary font-semibold mb-3">
+                Option 2
+              </p>
+              <h3 className="text-2xl font-semibold mb-3">
+                Want me to walk you through it personally?
+              </h3>
+              <p className="text-muted-foreground leading-relaxed mb-6">
+                Send your info and I'll personally reach out to schedule a quick screen-share.
+                I'll show you the admin side and help you decide if LessonSpot is a fit.
+              </p>
+              <div className="mt-auto">
+                <DemoRequestForm />
+              </div>
+            </CardContent>
+          </Card>
         </div>
       </section>
 
@@ -291,20 +231,6 @@ function VideoCard({
         <h3 className="text-lg font-semibold mt-1">{title}</h3>
       </div>
     </div>
-  );
-}
-
-function FeatureTile({ icon, title, body }: { icon: React.ReactNode; title: string; body: string }) {
-  return (
-    <Card>
-      <CardContent className="pt-6">
-        <div className="w-10 h-10 rounded-md bg-primary/10 text-primary flex items-center justify-center mb-4">
-          {icon}
-        </div>
-        <h3 className="font-semibold mb-2">{title}</h3>
-        <p className="text-sm text-muted-foreground leading-relaxed">{body}</p>
-      </CardContent>
-    </Card>
   );
 }
 
