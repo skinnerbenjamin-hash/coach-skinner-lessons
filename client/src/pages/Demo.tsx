@@ -89,6 +89,7 @@ export default function Demo() {
             duration="57 sec"
             src="/demo/client.mp4"
             poster="/demo/client-poster.jpg"
+            captions="/demo/client.en.vtt"
             testId="video-demo-client"
           />
           <VideoCard
@@ -97,6 +98,7 @@ export default function Demo() {
             duration="51 sec"
             src="/demo/admin.mp4"
             poster="/demo/admin-poster.jpg"
+            captions="/demo/admin.en.vtt"
             testId="video-demo-admin"
           />
         </div>
@@ -178,8 +180,8 @@ export default function Demo() {
 }
 
 function VideoCard({
-  eyebrow, title, duration, src, poster, testId,
-}: { eyebrow: string; title: string; duration: string; src: string; poster: string; testId: string }) {
+  eyebrow, title, duration, src, poster, captions, testId,
+}: { eyebrow: string; title: string; duration: string; src: string; poster: string; captions?: string; testId: string }) {
   const [playing, setPlaying] = useState(false);
   const videoRef = useRef<HTMLVideoElement | null>(null);
 
@@ -197,14 +199,24 @@ function VideoCard({
         {playing ? (
           <video
             ref={videoRef}
-            src={src}
             poster={poster}
             controls
             playsInline
             preload="metadata"
             className="w-full h-full object-cover bg-black"
             data-testid={testId}
-          />
+          >
+            <source src={src} type="video/mp4" />
+            {captions && (
+              <track
+                kind="captions"
+                src={captions}
+                srcLang="en"
+                label="English"
+                default
+              />
+            )}
+          </video>
         ) : (
           <button
             type="button"
