@@ -5,7 +5,7 @@
 //   const { data: tenant } = useTenant();
 //   tenant?.bookerLabel   // "Parent" (or whatever the coach set)
 //   tenant?.attendeeLabel // "Player"
-//   tenant?.name          // "Coach Skinner"
+//   tenant?.name          // tenant business name (e.g. "Coach Skinner")
 //   tenant?.primaryColor  // "#0ea5e9"
 //
 // If for any reason the tenant cannot be resolved (unknown subdomain), data
@@ -21,6 +21,13 @@ export interface Tenant {
   name: string | null;
   sport: string | null;
   primaryColor: string | null;
+  logoPath: string | null;
+  heroPath: string | null;
+  tagline: string | null;
+  about: string | null;
+  contactPhone: string | null;
+  contactEmail: string | null;
+  contactLocation: string | null;
   bookerLabel: string | null;
   attendeeLabel: string | null;
 }

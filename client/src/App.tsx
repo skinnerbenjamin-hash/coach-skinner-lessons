@@ -13,8 +13,10 @@ import Resources from "@/pages/Resources";
 import Signup from "@/pages/Signup";
 import Marketing from "@/pages/Marketing";
 import Demo from "@/pages/Demo";
+import SiteNotFound from "@/pages/SiteNotFound";
 import { Header } from "@/components/Header";
 import { TenantTheme } from "@/components/TenantTheme";
+import { useTenant } from "@/hooks/use-tenant";
 
 // Apex flag injected by the server (see server/static.ts).  When true, the
 // host is lessonspot.app or www.lessonspot.app and we render the marketing
@@ -68,18 +70,45 @@ function AppRouter() {
       </div>
     );
   }
+  // On a subdomain (non-apex) we need the tenant to resolve before rendering
+  // tenant-scoped pages like Book/Resources/MyAppointments.  If the subdomain
+  // doesn't map to any tenant, show a friendly "site not found" page instead
+  // of Book.tsx -- which used to render Skinner-branded fallbacks (the source
+  // of the "why does biblab show my data" confusion).
+  //
+  // The `/signup` route is always allowed through (so people can sign up from
+  // any subdomain in dev) and `/admin` is too (admins of unresolved subdomains
+  // shouldn't be locked out, though in practice they won't see anything).
+  const { data: tenant, isLoading: tenantLoading } = useTenant();
+  const tenantResolved = !!tenant?.tenantId;
   return (
     <div className="min-h-screen bg-background">
       <TenantTheme />
       <Header />
       <Switch>
-        <Route path="/" component={Book} />
-        <Route path="/my-appointments" component={MyAppointments} />
-        <Route path="/resources" component={Resources} />
-        <Route path="/admin" component={Admin} />
         <Route path="/signup" component={Signup} />
-        <Route component={NotFound} />
+        <Route path="/admin" component={Admin} />
+        <Route path="/">
+          {tenantResolved ? <Book /> : tenantLoading ? <LoadingScreen /> : <SiteNotFound host={tenant?.host} />}
+        </Route>
+        <Route path="/my-appointments">
+          {tenantResolved ? <MyAppointments /> : tenantLoading ? <LoadingScreen /> : <SiteNotFound host={tenant?.host} />}
+        </Route>
+        <Route path="/resources">
+          {tenantResolved ? <Resources /> : tenantLoading ? <LoadingScreen /> : <SiteNotFound host={tenant?.host} />}
+        </Route>
+        <Route>
+          {tenantResolved ? <NotFound /> : tenantLoading ? <LoadingScreen /> : <SiteNotFound host={tenant?.host} />}
+        </Route>
       </Switch>
+    </div>
+  );
+}
+
+function LoadingScreen() {
+  return (
+    <div className="container mx-auto max-w-xl px-4 py-16 text-sm text-muted-foreground">
+      Loading…
     </div>
   );
 }

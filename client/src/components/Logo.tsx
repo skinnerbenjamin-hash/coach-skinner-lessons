@@ -1,11 +1,17 @@
 import { useTenant } from "@/hooks/use-tenant";
 
 export function Logo({ className = "" }: { className?: string }) {
-  const { data: tenant } = useTenant();
-  const name = tenant?.name || "Coach Skinner";
+  const { data: tenant, isLoading } = useTenant();
+  // Generic fallback — used when the tenant query is still loading OR when the
+  // request hit a subdomain that doesn't map to any tenant.  We deliberately
+  // do NOT fall back to any one coach's name; that would leak Skinner's brand
+  // onto every unresolved subdomain like "foobar.lessonspot.app".
+  const resolved = !!tenant?.tenantId;
+  const name = resolved ? tenant!.name! : "LessonSpot";
+  const suffix = resolved ? "· Lessons" : "";
   // If the tenant uploaded a logo, prefer it.  Falls back to the inline SVG
   // mark (good default for trial signups before they upload).
-  const logoPath = tenant?.logoPath || null;
+  const logoPath = resolved ? (tenant!.logoPath || null) : null;
   return (
     <span className={`inline-flex items-center gap-2 ${className}`}>
       {logoPath ? (
@@ -37,7 +43,10 @@ export function Logo({ className = "" }: { className?: string }) {
         </svg>
       )}
       <span className="font-bold tracking-tight text-base">
-        {name} <span className="text-muted-foreground font-medium">· Lessons</span>
+        {name}
+        {suffix && (
+          <span className="text-muted-foreground font-medium ml-1">{suffix}</span>
+        )}
       </span>
     </span>
   );
