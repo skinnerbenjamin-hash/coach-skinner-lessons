@@ -75,39 +75,50 @@ export default function Marketing() {
       </header>
 
       {/* Hero */}
-      <section className="mx-auto max-w-6xl px-4 sm:px-6 py-16 sm:py-24">
-        <div className="max-w-3xl">
-          <p className="text-sm uppercase tracking-wide text-primary mb-3">
-            For baseball and softball coaches
-          </p>
-          <h1 className="text-3xl sm:text-5xl font-bold tracking-tight leading-tight">
-            Booking software built for the cages and the diamond.
-          </h1>
-          <p className="mt-6 text-lg text-muted-foreground">
-            Stop juggling DMs and group chats with travel-ball parents. LessonSpot gives you a
-            branded booking page at <span className="font-semibold">your-name.lessonspot.app</span> —
-            set your cage hours, run hitting and pitching lessons, host group clinics, and keep
-            private notes with every family in one place.
-          </p>
-          <div className="mt-8 flex flex-col sm:flex-row gap-3">
-            <Button size="lg" onClick={goSignup} data-testid="button-marketing-signup-hero">
-              Start your free trial
-            </Button>
-            <Button size="lg" variant="outline" asChild>
-              <a
-                href="#features"
-                onClick={(e) => {
-                  e.preventDefault();
-                  document.getElementById("features")?.scrollIntoView({ behavior: "smooth" });
-                }}
-              >
-                See how it works
-              </a>
-            </Button>
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-20">
+        <div className="grid lg:grid-cols-2 gap-10 lg:gap-12 items-center">
+          <div>
+            <p className="text-sm uppercase tracking-wide text-primary mb-3">
+              For baseball and softball coaches
+            </p>
+            <h1 className="text-3xl sm:text-5xl font-bold tracking-tight leading-tight">
+              Booking software built for the cages and the diamond.
+            </h1>
+            <p className="mt-6 text-lg text-muted-foreground">
+              Stop juggling DMs and group chats with travel-ball parents. LessonSpot gives you a
+              branded booking page at <span className="font-semibold">your-name.lessonspot.app</span> —
+              set your cage hours, run hitting and pitching lessons, host group clinics, and keep
+              private notes with every family in one place.
+            </p>
+            <div className="mt-8 flex flex-col sm:flex-row gap-3">
+              <Button size="lg" onClick={goSignup} data-testid="button-marketing-signup-hero">
+                Start your free trial
+              </Button>
+              <Button size="lg" variant="outline" asChild>
+                <a
+                  href="#features"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    document.getElementById("features")?.scrollIntoView({ behavior: "smooth" });
+                  }}
+                >
+                  See how it works
+                </a>
+              </Button>
+            </div>
+            <p className="mt-4 text-sm text-muted-foreground">
+              14 days free. No card required.
+            </p>
           </div>
-          <p className="mt-4 text-sm text-muted-foreground">
-            14 days free. No card required.
-          </p>
+          <div className="relative">
+            <img
+              src="./lessonspot-hero.jpg"
+              alt="Coach helping a softball player with her batting stance inside an indoor cage"
+              className="rounded-2xl shadow-xl w-full h-auto object-cover aspect-[16/9]"
+              loading="eager"
+              fetchPriority="high"
+            />
+          </div>
         </div>
       </section>
 
@@ -192,6 +203,30 @@ export default function Marketing() {
           {" "}<button onClick={goSignup} className="underline hover:text-foreground" data-testid="button-demos-other-sports">start a free trial</button>{" "}
           and customize lesson types, labels, and categories to fit your program.
         </p>
+      </section>
+
+      {/* Built in Indiana — founder story */}
+      <section className="mx-auto max-w-6xl px-4 sm:px-6 py-12 sm:py-16 border-t">
+        <div className="max-w-3xl mx-auto text-center">
+          <p className="text-sm uppercase tracking-wide text-primary mb-3">
+            Built in Greenwood, Indiana
+          </p>
+          <h2 className="text-2xl sm:text-3xl font-semibold mb-5">
+            Made by a softball coach, for softball coaches.
+          </h2>
+          <p className="text-muted-foreground leading-relaxed">
+            LessonSpot was built by a softball coach who got tired of juggling DMs, group chats, and
+            a Notes app to keep track of who was booked when. It's the tool I wished existed when I
+            started giving lessons — and now I'm sharing it with other coaches who run their
+            programs the same way.
+          </p>
+          <p className="text-muted-foreground leading-relaxed mt-4">
+            If you're in the Indianapolis area and want to swing by the cage,{" "}
+            <a href="mailto:hello@lessonspot.app" className="underline hover:text-foreground">
+              drop me a line
+            </a>.
+          </p>
+        </div>
       </section>
 
       {/* Pricing */}
