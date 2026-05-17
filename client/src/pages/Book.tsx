@@ -359,6 +359,10 @@ export default function Book() {
             src={tenantInfo.heroPath}
             alt={tenantInfo.name || "Lessons"}
             className="absolute inset-0 w-full h-full object-cover"
+            style={{
+              objectPosition: `${tenantInfo.heroFocalX ?? 50}% ${tenantInfo.heroFocalY ?? 50}%`,
+              transform: `scale(${(tenantInfo.heroZoom ?? 100) / 100})`,
+            }}
           />
           {(tenantInfo.name || tenantInfo.tagline) && (
             <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent" />

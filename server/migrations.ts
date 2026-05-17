@@ -134,6 +134,11 @@ export function runMigrations(sqlite: DB) {
     { col: "attendee_label", def: "TEXT NOT NULL DEFAULT 'Player'" },
     { col: "plan", def: "TEXT NOT NULL DEFAULT 'trial'" },
     { col: "trial_ends_at", def: "INTEGER" },
+    // Hero positioning: focal point (0-100, percent of image) + zoom (1.0 - 3.0).
+    // Default 50/50/1.0 = centered, no zoom (matches CSS object-cover center).
+    { col: "hero_focal_x", def: "INTEGER NOT NULL DEFAULT 50" },
+    { col: "hero_focal_y", def: "INTEGER NOT NULL DEFAULT 50" },
+    { col: "hero_zoom", def: "INTEGER NOT NULL DEFAULT 100" },
   ];
   for (const { col, def } of tenantBrandingCols) {
     if (!columnExists(sqlite, "tenants", col)) {

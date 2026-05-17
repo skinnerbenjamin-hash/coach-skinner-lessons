@@ -25,6 +25,13 @@ export const tenants = sqliteTable("tenants", {
   primaryColor: text("primary_color").notNull().default("#0ea5e9"), // hex; drives CSS var --primary
   logoPath: text("logo_path").notNull().default(""),              // /uploads/branding/<file>; falls back to text mark when empty
   heroPath: text("hero_path").notNull().default(""),              // /uploads/branding/<file>; big image at top of booking page
+  // Focal point as percent-of-image (0-100). 50/50 = center. Coach can drag
+  // the photo around in admin to set which part stays visible across screen
+  // sizes (mobile crops more than desktop).
+  heroFocalX: integer("hero_focal_x").notNull().default(50),
+  heroFocalY: integer("hero_focal_y").notNull().default(50),
+  // Zoom as percent (100 = no zoom, 300 = 3x zoom-in).
+  heroZoom: integer("hero_zoom").notNull().default(100),
   tagline: text("tagline").notNull().default(""),                 // short pitch under the title
   about: text("about").notNull().default(""),                     // longer paragraph on the site
   contactPhone: text("contact_phone").notNull().default(""),      // public "Text Coach" number

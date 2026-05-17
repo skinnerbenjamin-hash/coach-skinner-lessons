@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react"; 
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from "react"; 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -18,7 +18,7 @@ import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useTenantLabels } from "@/hooks/use-tenant";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
-import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil } from "lucide-react";
+import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil, RotateCcw, ZoomIn, ZoomOut, Move } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
@@ -2174,6 +2174,9 @@ type Branding = {
   primaryColor: string;
   logoPath: string;
   heroPath: string;
+  heroFocalX: number;  // 0-100, percent across image
+  heroFocalY: number;  // 0-100, percent down image
+  heroZoom: number;    // 100 = 1x, 300 = 3x
   tagline: string;
   about: string;
   contactPhone: string;
@@ -2191,6 +2194,194 @@ const SPORTS = [
 ] as const;
 const BOOKER_LABEL_OPTIONS = ["Parent", "Client", "Member", "Guardian"];
 const ATTENDEE_LABEL_OPTIONS = ["Player", "Student", "Athlete", "Member", "Client"];
+
+// ---------------------------------------------------------------------------
+// HeroEditor — interactive crop / focal-point editor for the hero banner.
+//
+// The actual booking page uses CSS `object-position: X% Y%` + `transform:
+// scale(zoom)` on a full-bleed <img>, so whatever the coach sees in this
+// preview is a 1:1 visual match (just smaller).
+//
+// Drag inside the desktop preview to move the focal point. The vertical
+// slider zooms. Click "Reset" to recenter. The mini mobile preview on the
+// right shows what mobile visitors see at the same focal/zoom values.
+// ---------------------------------------------------------------------------
+function HeroEditor({
+  heroPath,
+  focalX,
+  focalY,
+  zoom,
+  onChange,
+  onSave,
+  saving,
+  onUpload,
+}: {
+  heroPath: string;
+  focalX: number;
+  focalY: number;
+  zoom: number;
+  onChange: (patch: { heroFocalX?: number; heroFocalY?: number; heroZoom?: number }) => void;
+  onSave: (patch: { heroFocalX: number; heroFocalY: number; heroZoom: number }) => void;
+  saving: boolean;
+  onUpload: (file: File) => void;
+}) {
+  const previewRef = useRef<HTMLDivElement | null>(null);
+  const draggingRef = useRef(false);
+
+  function setFocalFromPoint(clientX: number, clientY: number) {
+    const el = previewRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const x = ((clientX - rect.left) / rect.width) * 100;
+    const y = ((clientY - rect.top) / rect.height) * 100;
+    onChange({
+      heroFocalX: Math.max(0, Math.min(100, Math.round(x))),
+      heroFocalY: Math.max(0, Math.min(100, Math.round(y))),
+    });
+  }
+
+  function onPointerDown(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!heroPath) return;
+    draggingRef.current = true;
+    (e.target as HTMLElement).setPointerCapture?.(e.pointerId);
+    setFocalFromPoint(e.clientX, e.clientY);
+  }
+  function onPointerMove(e: ReactPointerEvent<HTMLDivElement>) {
+    if (!draggingRef.current) return;
+    setFocalFromPoint(e.clientX, e.clientY);
+  }
+  function onPointerUp() {
+    draggingRef.current = false;
+  }
+
+  const scale = zoom / 100;
+  const objectPosition = `${focalX}% ${focalY}%`;
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between gap-2">
+        <Label>Hero image (optional)</Label>
+        <label className="cursor-pointer">
+          <input
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={e => { const f = e.target.files?.[0]; if (f) onUpload(f); }}
+            data-testid="input-upload-hero"
+          />
+          <span className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">
+            <Upload className="h-3.5 w-3.5" /> {heroPath ? "Replace" : "Upload"}
+          </span>
+        </label>
+      </div>
+
+      {!heroPath ? (
+        <div className="aspect-[16/5] w-full border-2 border-dashed rounded-lg flex items-center justify-center text-sm text-muted-foreground bg-muted/30">
+          Upload a photo to position it
+        </div>
+      ) : (
+        <>
+          <p className="text-xs text-muted-foreground flex items-center gap-1">
+            <Move className="h-3.5 w-3.5" />
+            Drag inside the preview to set the focal point. Use the slider to zoom.
+          </p>
+
+          {/* Desktop preview — matches the live booking page aspect ratio */}
+          <div className="flex gap-3">
+            <div className="flex-1 space-y-1">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Desktop preview</p>
+              <div
+                ref={previewRef}
+                className="relative w-full aspect-[16/5] overflow-hidden rounded-lg border bg-muted cursor-move select-none touch-none"
+                onPointerDown={onPointerDown}
+                onPointerMove={onPointerMove}
+                onPointerUp={onPointerUp}
+                onPointerCancel={onPointerUp}
+                data-testid="hero-editor-preview"
+              >
+                <img
+                  src={heroPath}
+                  alt="Hero preview"
+                  className="absolute inset-0 w-full h-full object-cover pointer-events-none"
+                  style={{ objectPosition, transform: `scale(${scale})` }}
+                  draggable={false}
+                />
+                {/* Crosshair showing current focal point */}
+                <div
+                  className="absolute pointer-events-none"
+                  style={{
+                    left: `${focalX}%`,
+                    top: `${focalY}%`,
+                    transform: "translate(-50%, -50%)",
+                  }}
+                  aria-hidden
+                >
+                  <div className="h-6 w-6 rounded-full border-2 border-white shadow-[0_0_0_1px_rgba(0,0,0,0.5)]" />
+                </div>
+              </div>
+            </div>
+
+            {/* Mobile preview — narrower, more aggressively cropped */}
+            <div className="w-24 space-y-1">
+              <p className="text-[10px] uppercase tracking-wide text-muted-foreground">Mobile</p>
+              <div className="relative w-full aspect-[16/6] overflow-hidden rounded-lg border bg-muted">
+                <img
+                  src={heroPath}
+                  alt="Mobile preview"
+                  className="absolute inset-0 w-full h-full object-cover"
+                  style={{ objectPosition, transform: `scale(${scale})` }}
+                  draggable={false}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* Zoom slider */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between text-xs text-muted-foreground">
+              <span className="flex items-center gap-1"><ZoomOut className="h-3.5 w-3.5" /> Zoom</span>
+              <span className="font-mono">{(zoom / 100).toFixed(2)}×</span>
+              <span className="flex items-center gap-1"><ZoomIn className="h-3.5 w-3.5" /></span>
+            </div>
+            <input
+              type="range"
+              min={100}
+              max={300}
+              step={5}
+              value={zoom}
+              onChange={e => onChange({ heroZoom: Number(e.target.value) })}
+              className="w-full accent-primary"
+              data-testid="input-hero-zoom"
+            />
+          </div>
+
+          {/* Action buttons */}
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => onChange({ heroFocalX: 50, heroFocalY: 50, heroZoom: 100 })}
+              data-testid="button-hero-reset"
+            >
+              <RotateCcw className="h-3.5 w-3.5 mr-1" /> Reset
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => onSave({ heroFocalX: focalX, heroFocalY: focalY, heroZoom: zoom })}
+              disabled={saving}
+              data-testid="button-hero-save-position"
+            >
+              {saving ? "Saving…" : "Save position"}
+            </Button>
+            <p className="text-xs text-muted-foreground">
+              Focal: {focalX}% × {focalY}%
+            </p>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function BrandingPanel() {
   const qc = useQueryClient();
@@ -2310,22 +2501,16 @@ function BrandingPanel() {
               </label>
             </div>
           </div>
-          <div className="space-y-2">
-            <Label>Hero image (optional)</Label>
-            <div className="flex items-center gap-3">
-              {merged.heroPath ? (
-                <img src={merged.heroPath} alt="Hero" className="h-20 w-32 object-cover border rounded" />
-              ) : (
-                <div className="h-20 w-32 border rounded flex items-center justify-center text-xs text-muted-foreground">none</div>
-              )}
-              <label className="cursor-pointer">
-                <input type="file" accept="image/*" className="hidden" onChange={e => { const f = e.target.files?.[0]; if (f) uploadImage("hero", f); }} data-testid="input-upload-hero" />
-                <span className="inline-flex items-center gap-1 rounded-md border px-3 py-1.5 text-sm hover:bg-muted">
-                  <Upload className="h-3.5 w-3.5" /> Upload
-                </span>
-              </label>
-            </div>
-          </div>
+          <HeroEditor
+            heroPath={merged.heroPath || ""}
+            focalX={merged.heroFocalX ?? 50}
+            focalY={merged.heroFocalY ?? 50}
+            zoom={merged.heroZoom ?? 100}
+            onChange={(patch) => setDraft(d => ({ ...d, ...patch }))}
+            onSave={(patch) => saveMut.mutate(patch)}
+            saving={saveMut.isPending}
+            onUpload={(f) => uploadImage("hero", f)}
+          />
         </CardContent>
       </Card>
 

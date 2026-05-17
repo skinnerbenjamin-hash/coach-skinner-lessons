@@ -23,6 +23,9 @@ export interface Tenant {
   primaryColor: string | null;
   logoPath: string | null;
   heroPath: string | null;
+  heroFocalX: number;
+  heroFocalY: number;
+  heroZoom: number;
   tagline: string | null;
   about: string | null;
   contactPhone: string | null;

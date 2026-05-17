@@ -456,6 +456,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       primaryColor: req.tenant?.primary_color ?? null,
       logoPath: req.tenant?.logo_path ?? null,
       heroPath: req.tenant?.hero_path ?? null,
+      heroFocalX: req.tenant?.hero_focal_x ?? 50,
+      heroFocalY: req.tenant?.hero_focal_y ?? 50,
+      heroZoom: req.tenant?.hero_zoom ?? 100,
       tagline: req.tenant?.tagline ?? null,
       about: req.tenant?.about ?? null,
       contactPhone: req.tenant?.contact_phone ?? null,
@@ -1418,6 +1421,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       primaryColor: t.primary_color,
       logoPath: t.logo_path,
       heroPath: t.hero_path,
+      heroFocalX: t.hero_focal_x ?? 50,
+      heroFocalY: t.hero_focal_y ?? 50,
+      heroZoom: t.hero_zoom ?? 100,
       tagline: t.tagline,
       about: t.about,
       contactPhone: t.contact_phone,
@@ -1457,6 +1463,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         vals.push(body[bodyKey]);
       }
     }
+    // Hero positioning: clamp to safe ranges so a bad client can't write
+    // garbage. focal coords are 0-100 (percent). zoom is 100-300 (1x-3x).
+    const numFields: Record<string, { col: string; min: number; max: number }> = {
+      heroFocalX: { col: "hero_focal_x", min: 0, max: 100 },
+      heroFocalY: { col: "hero_focal_y", min: 0, max: 100 },
+      heroZoom:   { col: "hero_zoom",    min: 100, max: 300 },
+    };
+    for (const [bodyKey, cfg] of Object.entries(numFields)) {
+      const v = body[bodyKey];
+      if (typeof v === "number" && Number.isFinite(v)) {
+        const clamped = Math.max(cfg.min, Math.min(cfg.max, Math.round(v)));
+        sets.push(`${cfg.col} = ?`);
+        vals.push(clamped);
+      }
+    }
     if (sets.length === 0) return res.json({ ok: true, updated: 0 });
     vals.push(tenantId);
     sqlite.prepare(`UPDATE tenants SET ${sets.join(", ")} WHERE id = ?`).run(...vals);
@@ -1478,7 +1499,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const file = (req as any).file;
     if (!file) return res.status(400).json({ error: "No file uploaded" });
     const path = `/uploads/branding/${file.filename}`;
-    sqlite.prepare(`UPDATE tenants SET hero_path = ? WHERE id = ?`).run(path, tenantId);
+    // Reset focal point + zoom on a new upload so a previously-tweaked crop
+    // doesn't ruin a fresh photo. Coach can re-position from the editor.
+    sqlite.prepare(
+      `UPDATE tenants SET hero_path = ?, hero_focal_x = 50, hero_focal_y = 50, hero_zoom = 100 WHERE id = ?`
+    ).run(path, tenantId);
     res.json({ ok: true, path });
   });
   // Serve branding assets (logos, hero images) — public so unauthenticated visitors can render them.
