@@ -41,15 +41,11 @@ export default function Marketing() {
           </div>
           <nav className="flex items-center gap-2">
             <a
-              href="#demos"
+              href="#/demo"
               className="text-sm text-muted-foreground hover:text-foreground px-3 py-2 hidden sm:inline-block"
-              data-testid="link-marketing-demos"
-              onClick={(e) => {
-                e.preventDefault();
-                document.getElementById("demos")?.scrollIntoView({ behavior: "smooth" });
-              }}
+              data-testid="link-marketing-watch-demo"
             >
-              Examples
+              Watch demo
             </a>
             <a
               href="#pricing"
@@ -96,14 +92,8 @@ export default function Marketing() {
                 Start your free trial
               </Button>
               <Button size="lg" variant="outline" asChild>
-                <a
-                  href="#features"
-                  onClick={(e) => {
-                    e.preventDefault();
-                    document.getElementById("features")?.scrollIntoView({ behavior: "smooth" });
-                  }}
-                >
-                  See how it works
+                <a href="#/demo" data-testid="link-marketing-hero-demo">
+                  Watch the 1-min demo
                 </a>
               </Button>
             </div>

@@ -12,6 +12,7 @@ import Admin from "@/pages/Admin";
 import Resources from "@/pages/Resources";
 import Signup from "@/pages/Signup";
 import Marketing from "@/pages/Marketing";
+import Demo from "@/pages/Demo";
 import { Header } from "@/components/Header";
 import { TenantTheme } from "@/components/TenantTheme";
 
@@ -61,6 +62,7 @@ function AppRouter() {
       <div className="min-h-screen bg-background">
         <Switch>
           <Route path="/signup" component={Signup} />
+          <Route path="/demo" component={Demo} />
           <Route component={Marketing} />
         </Switch>
       </div>
