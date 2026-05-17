@@ -506,6 +506,48 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json(checkSlug(slug));
   });
 
+  // Marketing demo-request leads.  Used by the /demo landing page on the apex.
+  // Soft-gate form: visitor can see the live demo link without filling this out,
+  // but if they do, we email Skinner so he can follow up personally.
+  app.post("/api/demo-request", async (req, res) => {
+    const body = req.body || {};
+    const name = String(body.name || "").trim().slice(0, 200);
+    const email = String(body.email || "").trim().slice(0, 200);
+    const phone = String(body.phone || "").trim().slice(0, 50);
+    const message = String(body.message || "").trim().slice(0, 2000);
+    if (!name || !email) {
+      return res.status(400).json({ error: "Name and email are required" });
+    }
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      return res.status(400).json({ error: "Invalid email" });
+    }
+    const to = process.env.DEMO_LEAD_TO || "skinnerbenjamin@yahoo.com";
+    const subject = `New LessonSpot demo request from ${name}`;
+    const escape = (s: string) =>
+      s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const html = `
+      <h2>New demo request</h2>
+      <p><strong>Name:</strong> ${escape(name)}</p>
+      <p><strong>Email:</strong> <a href="mailto:${escape(email)}">${escape(email)}</a></p>
+      ${phone ? `<p><strong>Phone:</strong> ${escape(phone)}</p>` : ""}
+      ${message ? `<p><strong>Message:</strong><br>${escape(message).replace(/\n/g, "<br>")}</p>` : ""}
+      <hr>
+      <p style="color:#666;font-size:12px">Sent from lessonspot.app/#/demo</p>
+    `;
+    const text =
+      `New demo request\n\n` +
+      `Name: ${name}\nEmail: ${email}\n` +
+      (phone ? `Phone: ${phone}\n` : "") +
+      (message ? `\nMessage:\n${message}\n` : "") +
+      `\nFrom lessonspot.app/#/demo`;
+    const result = await sendEmail({ to, subject, html, text });
+    if (!result.ok) {
+      console.error("demo-request email failed:", result.error);
+      return res.status(500).json({ error: "Email failed to send" });
+    }
+    res.json({ ok: true, dryRun: !!result.dryRun });
+  });
+
   app.post("/api/signup", (req, res) => {
     const body = req.body || {};
     const result = createTenantAndOwner({
