@@ -868,9 +868,7 @@ function SettingsPanel() {
       <Alert>
         <AlertDescription>
           The Text Coach button uses your coach phone. Booking confirmations and reminder emails are
-          sent through Resend from your verified domain <code className="mx-1">skinnersoftball.com</code>.
-          Manage your API keys at{" "}
-          <a href="https://resend.com" target="_blank" rel="noreferrer" className="underline">resend.com</a>.
+          sent automatically from your verified sending domain.
         </AlertDescription>
       </Alert>
 
@@ -937,9 +935,6 @@ function SettingsPanel() {
               {test.isPending ? "Sending…" : "Send test email"}
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Sign up at <a href="https://resend.com" target="_blank" rel="noreferrer" className="underline">resend.com</a> (free 100/day) and paste your API key.
-          </p>
           <div className="space-y-1">
             <Label htmlFor="resendFromEmail">From address</Label>
             <Input id="resendFromEmail" value={draft.resendFromEmail ?? ""} onChange={e => setDraft(s => ({ ...s, resendFromEmail: e.target.value }))} placeholder="Coach Skinner <coach@skinnersoftball.com>" data-testid="input-from-email" />
@@ -960,11 +955,6 @@ function SettingsPanel() {
               {testSms.isPending ? "Sending…" : "Send test SMS"}
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Get your Account SID, Auth Token, and a phone number from the{" "}
-            <a href="https://console.twilio.com" target="_blank" rel="noreferrer" className="underline">Twilio Console</a>.
-            On a trial account, recipient phones must be verified in Twilio first.
-          </p>
           <div className="space-y-1">
             <Label htmlFor="twilioAccountSid">Account SID</Label>
             <Input id="twilioAccountSid" type="password" placeholder={data.twilioAccountSid ? `Saved: ${data.twilioAccountSid}` : "ACxxxxxxxx… (paste to set/replace)"} value={draft.twilioAccountSid ?? ""} onChange={e => setDraft(s => ({ ...s, twilioAccountSid: e.target.value }))} data-testid="input-twilio-sid" />
