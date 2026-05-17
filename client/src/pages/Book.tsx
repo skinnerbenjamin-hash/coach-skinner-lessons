@@ -347,6 +347,37 @@ export default function Book() {
 
   return (
     <div className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
+      {/* Tenant hero banner — only shows on the first (profile) step so it
+          stays out of the way once families start picking times. Falls back
+          gracefully when no hero is uploaded. */}
+      {step === "profile" && tenantInfo?.heroPath && (
+        <div
+          className="relative w-full overflow-hidden rounded-xl mb-6 aspect-[16/6] sm:aspect-[16/5] bg-muted"
+          data-testid="tenant-hero"
+        >
+          <img
+            src={tenantInfo.heroPath}
+            alt={tenantInfo.name || "Lessons"}
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+          {(tenantInfo.name || tenantInfo.tagline) && (
+            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/30 to-transparent" />
+          )}
+          <div className="absolute inset-x-0 bottom-0 p-4 sm:p-6 text-white">
+            {tenantInfo.name && (
+              <h1 className="text-xl sm:text-3xl font-bold drop-shadow" data-testid="hero-name">
+                {tenantInfo.name}
+              </h1>
+            )}
+            {tenantInfo.tagline && (
+              <p className="text-sm sm:text-base text-white/90 mt-1 drop-shadow" data-testid="hero-tagline">
+                {tenantInfo.tagline}
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+
       <Stepper step={step} />
 
       {step === "profile" && (
