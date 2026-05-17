@@ -213,13 +213,13 @@ export default function Marketing() {
             Built in Greenwood, Indiana
           </p>
           <h2 className="text-2xl sm:text-3xl font-semibold mb-5">
-            Made by a softball coach, for softball coaches.
+            Built by a local high-level hitting instructor.
           </h2>
           <p className="text-muted-foreground leading-relaxed">
-            LessonSpot was built by a softball coach who got tired of juggling DMs, group chats, and
-            a Notes app to keep track of who was booked when. It's the tool I wished existed when I
-            started giving lessons — and now I'm sharing it with other coaches who run their
-            programs the same way.
+            LessonSpot was built by a high-level hitting instructor right here in Greenwood who got
+            tired of juggling DMs, group chats, and a Notes app to keep track of who was booked
+            when. It's the tool I wished existed when I started giving lessons — and now I'm sharing
+            it with other coaches and instructors who run their programs the same way.
           </p>
           <p className="text-muted-foreground leading-relaxed mt-4">
             If you're in the Indianapolis area and want to swing by the cage,{" "}
