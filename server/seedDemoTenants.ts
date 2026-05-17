@@ -239,10 +239,38 @@ export function seedDemoTenants(): void {
     // Demo tenants get a far-future "trial" so they never appear expired.
     const farFuture = now + 365 * 24 * 60 * 60 * 1000 * 10;
 
+    // Idempotent branding-only upsert.  We re-apply tenant-row fields
+    // (labels, tagline, primary color, etc.) every boot so tweaks to the
+    // DEMO_TENANTS table actually take effect on existing demo tenants.
+    // Lesson types, categories, and availability are NOT re-seeded for
+    // existing rows to avoid stomping on any test bookings tied to them.
+    const updateBranding = sqlite.prepare(`
+      UPDATE tenants SET
+        name = ?, sport = ?, primary_color = ?, tagline = ?, about = ?,
+        contact_email = ?, contact_location = ?,
+        booker_label = ?, attendee_label = ?
+      WHERE slug = ?
+    `);
+
     let createdCount = 0;
+    let updatedCount = 0;
     for (const demo of DEMO_TENANTS) {
       const existing = findBySlug.get(demo.slug) as { id: number } | undefined;
-      if (existing) continue;
+      if (existing) {
+        // Refresh branding only.
+        try {
+          updateBranding.run(
+            demo.name, demo.sport, demo.primaryColor, demo.tagline, demo.about,
+            demo.contactEmail, demo.contactLocation,
+            demo.bookerLabel, demo.attendeeLabel,
+            demo.slug,
+          );
+          updatedCount++;
+        } catch (err) {
+          console.error(`[demo-seed] failed to refresh branding for ${demo.slug}:`, err);
+        }
+        continue;
+      }
 
       const tx = sqlite.transaction(() => {
         const tenantResult = insertTenant.run(
@@ -283,8 +311,8 @@ export function seedDemoTenants(): void {
       }
     }
 
-    if (createdCount > 0) {
-      console.log(`[demo-seed] seeded ${createdCount} demo tenant(s)`);
+    if (createdCount > 0 || updatedCount > 0) {
+      console.log(`[demo-seed] seeded ${createdCount} new, refreshed ${updatedCount} existing demo tenant(s)`);
     }
   } finally {
     sqlite.close();
