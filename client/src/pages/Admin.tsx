@@ -57,7 +57,7 @@ export default function Admin() {
         <h1 className="text-xl font-semibold">Admin</h1>
         <SignOutButton />
       </div>
-      <p className="text-sm text-muted-foreground mb-6">Manage bookings, availability, and reminders.</p>
+      <p className="text-sm text-muted-foreground mb-6">Manage bookings, availability, and your page.</p>
       <Tabs defaultValue="bookings">
         <TabsList>
           <TabsTrigger value="bookings" data-testid="tab-bookings">Bookings</TabsTrigger>
@@ -66,7 +66,6 @@ export default function Admin() {
           <TabsTrigger value="team" data-testid="tab-team">Team</TabsTrigger>
           <TabsTrigger value="availability" data-testid="tab-availability">Availability</TabsTrigger>
           <TabsTrigger value="overrides" data-testid="tab-overrides">Blackouts</TabsTrigger>
-          <TabsTrigger value="reminders" data-testid="tab-reminders">SMS reminders</TabsTrigger>
           <TabsTrigger value="branding" data-testid="tab-branding">Branding</TabsTrigger>
           <TabsTrigger value="lesson-types" data-testid="tab-lesson-types">Lesson types</TabsTrigger>
           <TabsTrigger value="settings" data-testid="tab-settings">Settings</TabsTrigger>
@@ -77,7 +76,6 @@ export default function Admin() {
         <TabsContent value="team"><TeamPanel /></TabsContent>
         <TabsContent value="availability"><AvailabilityPanel /></TabsContent>
         <TabsContent value="overrides"><OverridesPanel /></TabsContent>
-        <TabsContent value="reminders"><RemindersPanel /></TabsContent>
         <TabsContent value="branding"><BrandingPanel /></TabsContent>
         <TabsContent value="lesson-types"><LessonTypesPanel /></TabsContent>
         <TabsContent value="settings"><SettingsPanel /></TabsContent>
