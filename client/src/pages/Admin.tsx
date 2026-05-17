@@ -2184,6 +2184,7 @@ type Branding = {
   contactLocation: string;
   bookerLabel: string;
   attendeeLabel: string;
+  paymentNote: string;
   plan: string;
   trialEndsAt: number | null;
 };
@@ -2479,6 +2480,19 @@ function BrandingPanel() {
             <Label htmlFor="b-about">About</Label>
             <Textarea id="b-about" rows={4} value={merged.about ?? ""} onChange={e => set("about", e.target.value)} placeholder="A short bio that appears on your booking page." data-testid="input-branding-about" />
           </div>
+          <div className="space-y-1">
+            <Label htmlFor="b-payment-note">Payment instructions</Label>
+            <Input
+              id="b-payment-note"
+              value={merged.paymentNote ?? ""}
+              onChange={e => set("paymentNote", e.target.value)}
+              placeholder="e.g. Cash only — due at lesson"
+              data-testid="input-branding-payment-note"
+            />
+            <p className="text-xs text-muted-foreground">
+              Shows on the booking page under your lesson types and in the confirmation email. Leave blank to hide.
+            </p>
+          </div>
         </CardContent>
       </Card>
 
@@ -2583,7 +2597,25 @@ type LessonType = {
   active: number;
   sortOrder: number;
   createdAt: number;
+  priceCents: number | null;
 };
+
+// Convert a dollar string ("60", "60.00", "60.5") into cents (6000, 6000, 6050).
+// Returns null for empty/invalid input so the API stores NULL = "not published".
+function parsePriceToCents(input: string): number | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const n = Number(trimmed.replace(/[$,\s]/g, ""));
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n * 100);
+}
+
+// Format cents as a clean dollar string for editing ("$60" or "$60.50").
+function formatCentsForInput(c: number | null | undefined): string {
+  if (c == null) return "";
+  if (c % 100 === 0) return String(c / 100);
+  return (c / 100).toFixed(2);
+}
 
 const DURATION_OPTIONS = [30, 45, 60, 75, 90, 120];
 
@@ -2595,8 +2627,11 @@ function LessonTypesPanel() {
   });
 
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [draft, setDraft] = useState<{ name: string; durationMin: number; capacity: number; active: number; isGroup: number }>(
-    { name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0 },
+  // priceCents is null when blank — the API stores NULL and the booking page
+  // hides the price label. priceInput is the raw string the coach is typing so
+  // "60.5" feels natural to edit before being normalized to cents on save.
+  const [draft, setDraft] = useState<{ name: string; durationMin: number; capacity: number; active: number; isGroup: number; priceInput: string }>(
+    { name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0, priceInput: "" },
   );
   const [showNew, setShowNew] = useState(false);
 
@@ -2610,7 +2645,7 @@ function LessonTypesPanel() {
       qc.invalidateQueries({ queryKey: ["/api/admin/lesson-types"] });
       qc.invalidateQueries({ queryKey: ["/api/lesson-types"] });
       setShowNew(false);
-      setDraft({ name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0 });
+      setDraft({ name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0, priceInput: "" });
     },
     onError: (e: any) => toast({ variant: "destructive", title: "Couldn't create", description: e.message }),
   });
@@ -2643,7 +2678,14 @@ function LessonTypesPanel() {
 
   function startEdit(t: LessonType) {
     setEditingId(t.id);
-    setDraft({ name: t.name, durationMin: t.durationMin, capacity: t.capacity, active: t.active, isGroup: t.isGroup ?? 0 });
+    setDraft({
+      name: t.name,
+      durationMin: t.durationMin,
+      capacity: t.capacity,
+      active: t.active,
+      isGroup: t.isGroup ?? 0,
+      priceInput: formatCentsForInput(t.priceCents),
+    });
   }
 
   if (isLoading || !data) return <p className="text-sm text-muted-foreground">Loading lesson types…</p>;
@@ -2667,7 +2709,7 @@ function LessonTypesPanel() {
 
         {showNew && (
           <div className="border rounded-lg p-4 space-y-3 bg-muted/30">
-            <div className="grid sm:grid-cols-4 gap-3">
+            <div className="grid sm:grid-cols-5 gap-3">
               <div className="sm:col-span-2">
                 <Label htmlFor="new-lt-name">Name</Label>
                 <Input id="new-lt-name" value={draft.name} placeholder="e.g. 1 Hour Lesson"
@@ -2688,6 +2730,13 @@ function LessonTypesPanel() {
                   onChange={e => setDraft(d => ({ ...d, capacity: Math.max(1, Number(e.target.value) || 1) }))}
                   data-testid="input-lesson-type-capacity" />
               </div>
+              <div>
+                <Label htmlFor="new-lt-price">Price (USD, optional)</Label>
+                <Input id="new-lt-price" type="text" inputMode="decimal" placeholder="e.g. 60"
+                  value={draft.priceInput}
+                  onChange={e => setDraft(d => ({ ...d, priceInput: e.target.value }))}
+                  data-testid="input-lesson-type-price" />
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <input id="new-lt-isgroup" type="checkbox" className="h-4 w-4"
@@ -2705,8 +2754,11 @@ function LessonTypesPanel() {
               </Label>
             </div>
             <div className="flex items-center justify-end gap-2">
-              <Button variant="outline" size="sm" onClick={() => { setShowNew(false); setDraft({ name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0 }); }}>Cancel</Button>
-              <Button size="sm" onClick={() => createMut.mutate(draft)} disabled={!draft.name.trim() || createMut.isPending} data-testid="button-lesson-type-create">
+              <Button variant="outline" size="sm" onClick={() => { setShowNew(false); setDraft({ name: "", durationMin: 60, capacity: 1, active: 1, isGroup: 0, priceInput: "" }); }}>Cancel</Button>
+              <Button size="sm" onClick={() => {
+                const { priceInput, ...rest } = draft;
+                createMut.mutate({ ...rest, priceCents: parsePriceToCents(priceInput) } as any);
+              }} disabled={!draft.name.trim() || createMut.isPending} data-testid="button-lesson-type-create">
                 {createMut.isPending ? "Creating…" : "Create"}
               </Button>
             </div>
@@ -2720,6 +2772,7 @@ function LessonTypesPanel() {
                 <th className="p-2 font-medium">Name</th>
                 <th className="p-2 font-medium">Duration</th>
                 <th className="p-2 font-medium">Capacity</th>
+                <th className="p-2 font-medium">Price</th>
                 <th className="p-2 font-medium">Type</th>
                 <th className="p-2 font-medium">Status</th>
                 <th className="p-2 font-medium text-right">Actions</th>
@@ -2727,7 +2780,7 @@ function LessonTypesPanel() {
             </thead>
             <tbody>
               {types.length === 0 && (
-                <tr><td colSpan={6} className="p-6 text-center text-sm text-muted-foreground">No lesson types yet. Add one above.</td></tr>
+                <tr><td colSpan={7} className="p-6 text-center text-sm text-muted-foreground">No lesson types yet. Add one above.</td></tr>
               )}
               {types.map(t => {
                 const editing = editingId === t.id;
@@ -2750,6 +2803,13 @@ function LessonTypesPanel() {
                             className="w-20" />
                         </td>
                         <td className="p-2">
+                          <Input type="text" inputMode="decimal" placeholder="—"
+                            value={draft.priceInput}
+                            onChange={e => setDraft(d => ({ ...d, priceInput: e.target.value }))}
+                            className="w-24"
+                            data-testid={`input-lesson-type-price-${t.id}`} />
+                        </td>
+                        <td className="p-2">
                           <select className="border rounded-md h-9 px-2 bg-background" value={draft.isGroup}
                             onChange={e => setDraft(d => ({ ...d, isGroup: Number(e.target.value) }))}>
                             <option value={0}>Solo</option>
@@ -2765,7 +2825,10 @@ function LessonTypesPanel() {
                         </td>
                         <td className="p-2 text-right space-x-1">
                           <Button size="sm" variant="outline" onClick={() => setEditingId(null)}>Cancel</Button>
-                          <Button size="sm" onClick={() => updateMut.mutate({ id: t.id, patch: draft })}
+                          <Button size="sm" onClick={() => {
+                            const { priceInput, ...rest } = draft;
+                            updateMut.mutate({ id: t.id, patch: { ...rest, priceCents: parsePriceToCents(priceInput) } as any });
+                          }}
                             disabled={!draft.name.trim() || updateMut.isPending}
                             data-testid={`button-lesson-type-save-${t.id}`}>
                             {updateMut.isPending ? "Saving…" : "Save"}
@@ -2777,6 +2840,11 @@ function LessonTypesPanel() {
                         <td className="p-2 font-medium">{t.name}</td>
                         <td className="p-2">{t.durationMin} min</td>
                         <td className="p-2">{t.capacity > 1 ? `${t.capacity} (group)` : "1 (private)"}</td>
+                        <td className="p-2">
+                          {t.priceCents == null
+                            ? <span className="text-xs text-muted-foreground">not set</span>
+                            : <span className="font-medium">${formatCentsForInput(t.priceCents)}</span>}
+                        </td>
                         <td className="p-2">
                           <span className={`inline-flex items-center text-xs px-2 py-0.5 rounded-full ${t.isGroup === 1 ? "bg-blue-100 text-blue-800" : "bg-amber-100 text-amber-800"}`}>
                             {t.isGroup === 1 ? "Group" : "Solo"}

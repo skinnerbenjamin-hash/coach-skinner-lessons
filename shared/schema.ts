@@ -36,6 +36,10 @@ export const tenants = sqliteTable("tenants", {
   about: text("about").notNull().default(""),                     // longer paragraph on the site
   contactPhone: text("contact_phone").notNull().default(""),      // public "Text Coach" number
   contactEmail: text("contact_email").notNull().default(""),      // public email; used for replies
+  // Free-text payment instructions shown on the booking page and confirmation
+  // email (e.g. "Cash only — due at lesson", "Cash or Venmo @CoachX"). Empty
+  // string = no payment block displayed.
+  paymentNote: text("payment_note").notNull().default(""),
   contactLocation: text("contact_location").notNull().default(""),// freeform "Greenwood, IN" etc.
   // ---- Label vocabulary (replaces hardcoded "parent"/"player" everywhere) ----
   bookerLabel: text("booker_label").notNull().default("Parent"),   // "Parent" | "Client" | "Student" | "Member"
@@ -60,6 +64,9 @@ export const lessonTypes = sqliteTable("lesson_types", {
   name: text("name").notNull(),
   durationMin: integer("duration_min").notNull(),
   capacity: integer("capacity").notNull().default(1),
+  // Price in cents. NULL = no price published (hidden on booking page).
+  // Stored as cents to avoid floating-point bugs (e.g. 6000 = $60.00).
+  priceCents: integer("price_cents"),
   // 1 = group lesson (capacity > 1 implied), 0 = solo/1-on-1 lesson.
   // Used together with availability.mode to gate which slots a customer sees.
   isGroup: integer("is_group").notNull().default(0),

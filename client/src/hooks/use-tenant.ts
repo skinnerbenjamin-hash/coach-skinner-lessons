@@ -31,6 +31,7 @@ export interface Tenant {
   contactPhone: string | null;
   contactEmail: string | null;
   contactLocation: string | null;
+  paymentNote: string;
   bookerLabel: string | null;
   attendeeLabel: string | null;
 }

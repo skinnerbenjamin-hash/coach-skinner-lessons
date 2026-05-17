@@ -46,7 +46,15 @@ type LessonType = {
   capacity: number;
   isGroup: number;
   active: number;
+  priceCents: number | null;
 };
+
+// Format cents as "$60" (clean) or "$60.50" (with cents only when needed).
+function formatPrice(cents: number | null | undefined): string {
+  if (cents == null) return "";
+  const dollars = cents / 100;
+  return dollars % 1 === 0 ? `$${dollars}` : `$${dollars.toFixed(2)}`;
+}
 type LessonTypesResponse = { lessonTypes: LessonType[] };
 
 // One extra participant beyond the primary booker.
@@ -578,7 +586,14 @@ export default function Book() {
                             : "border-border hover-elevate")
                         }
                       >
-                        <div className="font-medium text-sm">{lt.name}</div>
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="font-medium text-sm">{lt.name}</div>
+                          {lt.priceCents != null && (
+                            <div className="text-sm font-semibold text-primary whitespace-nowrap" data-testid={`price-lesson-type-${lt.id}`}>
+                              {formatPrice(lt.priceCents)}
+                            </div>
+                          )}
+                        </div>
                         <div className="text-xs text-muted-foreground mt-0.5">
                           {lt.durationMin} min{lt.capacity > 1 ? ` · up to ${lt.capacity} ${labels.attendee.toLowerCase()}s` : ""}
                         </div>
@@ -845,6 +860,16 @@ export default function Book() {
               {checkout.isPending ? "Booking…" : `Confirm ${selected.size} session${selected.size === 1 ? "" : "s"}`}
             </Button>
           </div>
+          {/* Payment instructions on the review step — last chance to remind
+              before the customer hits confirm. Hidden if no note is set. */}
+          {tenantInfo?.paymentNote && (
+            <Alert className="border-primary/30 bg-primary/5">
+              <AlertDescription className="text-sm">
+                <span className="font-semibold">Payment: </span>
+                {tenantInfo.paymentNote}
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
       )}
 

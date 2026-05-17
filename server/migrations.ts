@@ -139,6 +139,9 @@ export function runMigrations(sqlite: DB) {
     { col: "hero_focal_x", def: "INTEGER NOT NULL DEFAULT 50" },
     { col: "hero_focal_y", def: "INTEGER NOT NULL DEFAULT 50" },
     { col: "hero_zoom", def: "INTEGER NOT NULL DEFAULT 100" },
+    // Free-text payment instructions shown to families on the booking page
+    // and confirmation email ("Cash only — due at lesson", etc.).
+    { col: "payment_note", def: "TEXT NOT NULL DEFAULT ''" },
   ];
   for (const { col, def } of tenantBrandingCols) {
     if (!columnExists(sqlite, "tenants", col)) {
@@ -436,6 +439,13 @@ export function runMigrations(sqlite: DB) {
   }
   if (tableExists(sqlite, "date_overrides") && !columnExists(sqlite, "date_overrides", "mode")) {
     sqlite.exec(`ALTER TABLE date_overrides ADD COLUMN mode TEXT NOT NULL DEFAULT 'both'`);
+  }
+
+  // Display-only price (in cents) for each lesson type. NULL = no price
+  // published — the card just shows duration. Booking page reads this and
+  // renders "$60 / 30 min" etc.; we do NOT charge anything online.
+  if (tableExists(sqlite, "lesson_types") && !columnExists(sqlite, "lesson_types", "price_cents")) {
+    sqlite.exec(`ALTER TABLE lesson_types ADD COLUMN price_cents INTEGER`);
   }
 
   // ---- 10. Waitlist (Phase 2) -----------------------------------------

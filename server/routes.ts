@@ -463,6 +463,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       about: req.tenant?.about ?? null,
       contactPhone: req.tenant?.contact_phone ?? null,
       contactEmail: req.tenant?.contact_email ?? null,
+      paymentNote: req.tenant?.payment_note ?? "",
       contactLocation: req.tenant?.contact_location ?? null,
       bookerLabel: req.tenant?.booker_label ?? null,
       attendeeLabel: req.tenant?.attendee_label ?? null,
@@ -1080,6 +1081,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
               <div style="font-weight:600;font-size:14px;margin-bottom:4px;">Need to change or cancel?</div>
               <div style="font-size:14px;line-height:1.5;color:#3a4540;">You can do it yourself anytime up to <b>24 hours before</b> the session. Just open the link above and use the email you booked with (${profile.email || "your booking email"}). Save this email — the link works any time.</div>
             </div>
+            ${(req.tenant?.payment_note || "").trim() ? `<div style="background:#eef7f1;border-left:4px solid #1f5a37;padding:12px 16px;border-radius:6px;margin:12px 0;">
+              <div style="font-weight:600;font-size:14px;margin-bottom:4px;">Payment</div>
+              <div style="font-size:14px;line-height:1.5;color:#3a4540;">${req.tenant!.payment_note!.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+            </div>` : ""}
             <div style="background:#fff4e8;border-left:4px solid #d18e1c;padding:12px 16px;border-radius:6px;margin:12px 0;">
               <div style="font-weight:600;font-size:14px;margin-bottom:4px;">Cancellation policy</div>
               <div style="font-size:14px;line-height:1.5;color:#3a4540;">Cancellations or no-shows within <b>24 hours</b> of the scheduled session are subject to a <b>$30 fee per 30-minute session</b>, billed at the next lesson. We appreciate your understanding—late cancellations prevent us from offering the time to other families.</div>
@@ -1087,7 +1092,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             <p style="font-size:13px;color:#7a857e;margin:16px 0 0 0;">Within 24 hours? Text ${coachName} directly.</p>
           </div>
         </div></body></html>`;
-      const text = `${coachName} — ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed:\n${sessionLines}\n\nA calendar file (.ics) is attached for your records.\n\nManage your appointments: ${manageUrl}\nTo change or cancel, please use the link above (sign in with the email you booked with: ${profile.email || "your booking email"}). Changes are accepted up to 24 hours before the scheduled session.\n\nCancellation policy: Cancellations or no-shows within 24 hours of the scheduled session are subject to a $30 fee per 30-minute session, billed at the next lesson.`;
+      const paymentNoteForText = (req.tenant?.payment_note || "").trim();
+      const text = `${coachName} — ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed:\n${sessionLines}\n\nA calendar file (.ics) is attached for your records.\n\nManage your appointments: ${manageUrl}\nTo change or cancel, please use the link above (sign in with the email you booked with: ${profile.email || "your booking email"}). Changes are accepted up to 24 hours before the scheduled session.${paymentNoteForText ? `\n\nPayment: ${paymentNoteForText}` : ""}\n\nCancellation policy: Cancellations or no-shows within 24 hours of the scheduled session are subject to a $30 fee per 30-minute session, billed at the next lesson.`;
       sendEmail({
         to: profile.email,
         subject: `Booking confirmed: ${profile.playerName} — ${expanded.length} session${expanded.length === 1 ? "" : "s"}`,
@@ -1428,6 +1434,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       about: t.about,
       contactPhone: t.contact_phone,
       contactEmail: t.contact_email,
+      paymentNote: t.payment_note ?? "",
       contactLocation: t.contact_location,
       bookerLabel: t.booker_label,
       attendeeLabel: t.attendee_label,
@@ -1454,6 +1461,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       contactLocation: "contact_location",
       bookerLabel: "booker_label",
       attendeeLabel: "attendee_label",
+      paymentNote: "payment_note",
     };
     const sets: string[] = [];
     const vals: any[] = [];
