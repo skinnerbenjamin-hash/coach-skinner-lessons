@@ -1067,9 +1067,11 @@ function OverridesPanel() {
       const rows = result?.cancelledBookings ?? [];
       if (rows.length > 0) {
         setLastCancellation({ date, rows });
+        const familyCount = new Set(rows.map((r: any) => r.email || r.phone)).size;
+        const emailedCount = new Set(rows.filter((r: any) => r.notified).map((r: any) => r.email || r.phone)).size;
         toast({
           title: `Day blacked out`,
-          description: `Cancelled ${rows.length} booking${rows.length === 1 ? "" : "s"} and texted ${new Set(rows.map((r: any) => r.phone)).size} parent${new Set(rows.map((r: any) => r.phone)).size === 1 ? "" : "s"}.`,
+          description: `Cancelled ${rows.length} booking${rows.length === 1 ? "" : "s"} and emailed ${emailedCount} of ${familyCount} famil${familyCount === 1 ? "y" : "ies"}.`,
         });
       } else {
         toast({ title: "Day blacked out" });
@@ -1114,8 +1116,8 @@ function OverridesPanel() {
             <ul className="text-sm space-y-1">
               {lastCancellation.rows.map((r: any) => (
                 <li key={r.id}>
-                  • {r.playerName} ({formatPhone(r.phone)}) at {r.start.split("T")[1]} —{" "}
-                  {r.smsOk ? <span className="text-primary">text sent</span> : <span className="text-destructive">text failed: {r.smsError}</span>}
+                  • {r.playerName} ({r.email || formatPhone(r.phone)}) at {r.start.split("T")[1]} —{" "}
+                  {r.notified ? <span className="text-primary">email sent</span> : <span className="text-destructive">email failed: {r.notifyError || "unknown error"}</span>}
                 </li>
               ))}
             </ul>
