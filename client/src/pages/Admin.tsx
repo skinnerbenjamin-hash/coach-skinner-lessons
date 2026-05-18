@@ -131,17 +131,25 @@ function ShareLinkBar() {
 function OnboardingChecklist() {
   const { data: tenant } = useTenant();
   const { data: branding } = useQuery<any>({ queryKey: ["/api/admin/branding"] });
-  const { data: lessonTypes } = useQuery<any[]>({ queryKey: ["/api/lesson-types"] });
-  const { data: bookings } = useQuery<any[]>({ queryKey: ["/api/bookings"] });
+  // The list endpoints return { lessonTypes: [...] } and { bookings: [...] }
+  // rather than bare arrays, so we extract defensively here.
+  const { data: ltResp } = useQuery<any>({ queryKey: ["/api/lesson-types"] });
+  const { data: bkResp } = useQuery<any>({ queryKey: ["/api/bookings"] });
+  const lessonTypes: any[] = Array.isArray(ltResp)
+    ? ltResp
+    : Array.isArray(ltResp?.lessonTypes) ? ltResp.lessonTypes : [];
+  const bookings: any[] = Array.isArray(bkResp)
+    ? bkResp
+    : Array.isArray(bkResp?.bookings) ? bkResp.bookings : [];
 
   // "Default" lesson types seeded at signup. If the coach renamed or replaced
   // any of them, we consider the lesson-type step done.
   const defaultNames = new Set(["30 Min Lesson", "1 Hour Lesson", "Group Session"]);
-  const customisedLessonTypes = !!lessonTypes && lessonTypes.some(lt => !defaultNames.has(lt.name));
+  const customisedLessonTypes = lessonTypes.some(lt => !defaultNames.has(lt.name));
   const hasTagline = !!branding?.tagline && String(branding.tagline).trim().length > 0;
   const hasContactPhone = !!branding?.contactPhone && String(branding.contactPhone).trim().length > 0;
   const hasHero = !!branding?.heroPath;
-  const hasAnyBooking = !!bookings && bookings.length > 0;
+  const hasAnyBooking = bookings.length > 0;
 
   const steps = [
     {
