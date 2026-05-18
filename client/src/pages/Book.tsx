@@ -119,6 +119,21 @@ export default function Book() {
     const stored = getRememberedEmail();
     if (stored) setLookupEmail(stored);
   }, []);
+
+  // Listen for header "home" clicks. When the user is already on "/" and clicks
+  // the logo or "Book" link, the route doesn't change and they get stuck on
+  // their current step. The Header dispatches a "booking:reset" event so we
+  // can return to the natural starting step here.
+  useEffect(() => {
+    const onReset = () => {
+      // Reset to start: coach picker if 2+ coaches, else profile.
+      setStep(coaches.length >= 2 ? "coach" : "profile");
+      setSelected(new Set());
+      setSlotKidIndex({});
+    };
+    window.addEventListener("booking:reset", onReset);
+    return () => window.removeEventListener("booking:reset", onReset);
+  }, [coaches.length]);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [lookupBusy, setLookupBusy] = useState(false);
 
@@ -934,11 +949,23 @@ export default function Book() {
             </Card>
           )}
           <div className="flex items-center justify-between flex-wrap gap-3">
-            <div>
-              <h1 className="text-xl font-semibold">Pick your sessions</h1>
-              <p className="text-sm text-muted-foreground">
-                Each session is {selectedLessonType?.durationMin ?? 30} minutes. Tap any available time to add it.
-              </p>
+            <div className="flex items-start gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="-ml-2 mt-0.5"
+                onClick={() => setStep("profile")}
+                data-testid="button-pick-back-top"
+              >
+                <ChevronLeft className="h-4 w-4 mr-1" />
+                Back
+              </Button>
+              <div>
+                <h1 className="text-xl font-semibold">Pick your sessions</h1>
+                <p className="text-sm text-muted-foreground">
+                  Each session is {selectedLessonType?.durationMin ?? 30} minutes. Tap any available time to add it.
+                </p>
+              </div>
             </div>
             <div className="flex items-center gap-2">
               <Button
