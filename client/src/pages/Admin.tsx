@@ -16,9 +16,9 @@ import { Sheet, SheetContent, SheetHeader, SheetTitle, SheetDescription } from "
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter, DialogDescription } from "@/components/ui/dialog";
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
-import { useTenantLabels } from "@/hooks/use-tenant";
+import { useTenant, useTenantLabels } from "@/hooks/use-tenant";
 import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
-import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil, RotateCcw, ZoomIn, ZoomOut, Move } from "lucide-react";
+import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil, RotateCcw, ZoomIn, ZoomOut, Move, Copy as CopyIcon, AlertCircle, CheckCircle2, Circle, Sparkles } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
@@ -37,6 +37,172 @@ type CoachingNote = { id: number; profileId: number; author: "coach" | "parent";
 
 function initialsFor(name: string): string {
   return (name || "?").trim().split(/\s+/).slice(0, 2).map(p => p[0] || "").join("").toUpperCase() || "?";
+}
+
+// ----- Trial banner -----
+// Shows on every admin page when the tenant is on the free trial.
+//   - Days remaining > 3   → quiet blue "X days left in your free trial"
+//   - Days remaining 1–3  → amber "Trial ends soon"
+//   - Already expired      → red "Trial ended — your booking page is paused"
+function TrialBanner() {
+  const { data: tenant } = useTenant();
+  if (!tenant || tenant.plan !== "trial" || tenant.trialEndsAt == null) return null;
+  const msLeft = tenant.trialEndsAt - Date.now();
+  const daysLeft = Math.ceil(msLeft / (24 * 60 * 60 * 1000));
+  const expired = msLeft <= 0;
+  let tone = "bg-blue-50 border-blue-200 text-blue-900";
+  let icon = <Sparkles className="h-4 w-4" />;
+  let title = `${daysLeft} day${daysLeft === 1 ? "" : "s"} left in your free trial`;
+  let body = "Subscribe any time to keep your booking page live after the trial ends.";
+  if (expired) {
+    tone = "bg-red-50 border-red-200 text-red-900";
+    icon = <AlertCircle className="h-4 w-4" />;
+    title = "Your free trial has ended";
+    body = "Your public booking page is paused. Subscribe to start accepting bookings again.";
+  } else if (daysLeft <= 3) {
+    tone = "bg-amber-50 border-amber-200 text-amber-900";
+    icon = <AlertCircle className="h-4 w-4" />;
+    title = daysLeft === 1 ? "Last day of your free trial" : `${daysLeft} days left in your free trial`;
+    body = "Subscribe before the trial ends so your booking page never goes dark.";
+  }
+  return (
+    <div className={`flex flex-col sm:flex-row sm:items-center gap-3 rounded-md border px-4 py-3 mb-4 ${tone}`} data-testid="trial-banner">
+      <div className="flex items-start gap-2 flex-1">
+        <div className="mt-0.5">{icon}</div>
+        <div className="text-sm">
+          <div className="font-semibold">{title}</div>
+          <div className="opacity-80">{body}</div>
+        </div>
+      </div>
+      <Button
+        size="sm"
+        variant={expired ? "default" : "outline"}
+        asChild
+        data-testid="button-subscribe"
+      >
+        <a href="mailto:skinnerbenjamin@yahoo.com?subject=Subscribe%20to%20LessonSpot">
+          {expired ? "Subscribe now" : "Subscribe"}
+        </a>
+      </Button>
+    </div>
+  );
+}
+
+// ----- Share booking link bar -----
+// Pinned at the top of admin so the coach always knows the public URL and
+// can copy/open it in one click.
+function ShareLinkBar() {
+  const { data: tenant } = useTenant();
+  const { toast } = useToast();
+  if (!tenant?.slug) return null;
+  const bookingUrl = `https://${tenant.slug}.lessonspot.app`;
+  const onCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(bookingUrl);
+      toast({ title: "Copied", description: "Booking link copied to clipboard." });
+    } catch {
+      toast({ title: "Couldn’t copy", description: bookingUrl, variant: "destructive" });
+    }
+  };
+  return (
+    <div className="flex flex-col sm:flex-row sm:items-center gap-2 rounded-md border bg-muted/40 px-4 py-3 mb-4" data-testid="share-link-bar">
+      <div className="flex-1 min-w-0">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground mb-0.5">Your booking page</div>
+        <div className="font-mono text-sm truncate" data-testid="text-booking-url">{bookingUrl}</div>
+      </div>
+      <div className="flex gap-2 shrink-0">
+        <Button size="sm" variant="outline" onClick={onCopy} data-testid="button-copy-link">
+          <CopyIcon className="h-4 w-4 mr-1" /> Copy
+        </Button>
+        <Button size="sm" variant="outline" asChild data-testid="button-open-booking">
+          <a href={bookingUrl} target="_blank" rel="noreferrer">
+            <ExternalLink className="h-4 w-4 mr-1" /> Open
+          </a>
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ----- Onboarding checklist -----
+// Shown until the coach has completed the 4 setup steps. Each step is a
+// heuristic that probes the data the coach should have customised by now.
+// Once all 4 are done the card auto-hides (so it doesn't haunt a finished setup).
+function OnboardingChecklist() {
+  const { data: tenant } = useTenant();
+  const { data: branding } = useQuery<any>({ queryKey: ["/api/admin/branding"] });
+  const { data: lessonTypes } = useQuery<any[]>({ queryKey: ["/api/lesson-types"] });
+  const { data: bookings } = useQuery<any[]>({ queryKey: ["/api/bookings"] });
+
+  // "Default" lesson types seeded at signup. If the coach renamed or replaced
+  // any of them, we consider the lesson-type step done.
+  const defaultNames = new Set(["30 Min Lesson", "1 Hour Lesson", "Group Session"]);
+  const customisedLessonTypes = !!lessonTypes && lessonTypes.some(lt => !defaultNames.has(lt.name));
+  const hasTagline = !!branding?.tagline && String(branding.tagline).trim().length > 0;
+  const hasContactPhone = !!branding?.contactPhone && String(branding.contactPhone).trim().length > 0;
+  const hasHero = !!branding?.heroPath;
+  const hasAnyBooking = !!bookings && bookings.length > 0;
+
+  const steps = [
+    {
+      key: "lesson-types",
+      label: "Customize your lesson types",
+      sub: "Edit names, durations, and pricing in the Lesson types tab.",
+      done: customisedLessonTypes,
+    },
+    {
+      key: "branding",
+      label: "Add your tagline and contact info",
+      sub: "Help families recognize your page in the Branding tab.",
+      done: hasTagline && hasContactPhone,
+    },
+    {
+      key: "hero",
+      label: "Upload a hero photo",
+      sub: "A great photo on your booking page builds trust instantly.",
+      done: hasHero,
+    },
+    {
+      key: "test-booking",
+      label: "Test your first booking",
+      sub: hasAnyBooking ? "Booked — you’re live." : "Open your booking page and book a test lesson to make sure everything works.",
+      done: hasAnyBooking,
+    },
+  ];
+  const doneCount = steps.filter(s => s.done).length;
+  const allDone = doneCount === steps.length;
+
+  // Don't show on legacy tenant id=1 (Coach Skinner is already set up).
+  // Also auto-hide once all steps are complete.
+  if (allDone) return null;
+  if (tenant?.tenantId === 1) return null;
+
+  return (
+    <Card className="mb-4" data-testid="onboarding-checklist">
+      <CardContent className="pt-6">
+        <div className="flex items-center justify-between mb-3">
+          <div>
+            <h2 className="text-base font-semibold">Get your booking page ready</h2>
+            <p className="text-xs text-muted-foreground">{doneCount} of {steps.length} done</p>
+          </div>
+          <Badge variant="secondary">{Math.round((doneCount / steps.length) * 100)}%</Badge>
+        </div>
+        <ul className="space-y-2">
+          {steps.map(s => (
+            <li key={s.key} className="flex items-start gap-2 text-sm" data-testid={`onboarding-step-${s.key}`}>
+              {s.done
+                ? <CheckCircle2 className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
+                : <Circle className="h-4 w-4 text-muted-foreground mt-0.5 shrink-0" />}
+              <div className={s.done ? "text-muted-foreground line-through" : ""}>
+                <div className="font-medium">{s.label}</div>
+                <div className="text-xs text-muted-foreground">{s.sub}</div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      </CardContent>
+    </Card>
+  );
 }
 type Availability = { id: number; dayOfWeek: number; startTime: string; endTime: string; mode?: "solo" | "group" | "both" };
 type DateOverride = { id: number; date: string; type: string; startTime: string | null; endTime: string | null; mode?: "solo" | "group" | "both" };
@@ -62,7 +228,10 @@ export default function Admin() {
         <h1 className="text-xl font-semibold">Admin</h1>
         <SignOutButton />
       </div>
-      <p className="text-sm text-muted-foreground mb-6">Manage bookings, availability, and your page.</p>
+      <p className="text-sm text-muted-foreground mb-4">Manage bookings, availability, and your page.</p>
+      <TrialBanner />
+      <ShareLinkBar />
+      <OnboardingChecklist />
       <Tabs defaultValue="bookings">
         <TabsList>
           <TabsTrigger value="bookings" data-testid="tab-bookings">Bookings</TabsTrigger>

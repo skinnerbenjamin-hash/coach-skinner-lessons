@@ -516,6 +516,44 @@ export default function Book() {
   const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const validProfile = normalizePhone(phone).length >= 10 && emailLooksValid && parentName.trim() && playerName.trim();
 
+  // Trial enforcement: if this tenant's free trial has lapsed and they
+  // haven't upgraded, hide the booking flow and show a friendly notice.
+  // (Existing customers can still reach the coach through other channels;
+  //  this only blocks brand-new bookings.)
+  const trialExpired = tenantInfo?.plan === "trial"
+    && tenantInfo.trialEndsAt != null
+    && Date.now() > tenantInfo.trialEndsAt;
+  if (trialExpired) {
+    return (
+      <div className="mx-auto max-w-xl px-4 sm:px-6 py-12">
+        <Card>
+          <CardContent className="pt-6 space-y-4">
+            <div className="flex items-center gap-2 text-amber-600">
+              <AlertTriangle className="h-5 w-5" />
+              <h1 className="text-lg font-semibold">Booking is paused</h1>
+            </div>
+            <p className="text-sm text-muted-foreground">
+              {tenantInfo?.name || "This coach"} isn't accepting new online bookings right now.
+              {tenantInfo?.contactPhone || tenantInfo?.contactEmail
+                ? " Please reach out directly to schedule a lesson:"
+                : ""}
+            </p>
+            {(tenantInfo?.contactPhone || tenantInfo?.contactEmail) && (
+              <div className="text-sm space-y-1">
+                {tenantInfo?.contactPhone && (
+                  <div>Phone: <a className="underline" href={`tel:${tenantInfo.contactPhone}`}>{tenantInfo.contactPhone}</a></div>
+                )}
+                {tenantInfo?.contactEmail && (
+                  <div>Email: <a className="underline" href={`mailto:${tenantInfo.contactEmail}`}>{tenantInfo.contactEmail}</a></div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   return (
     <div className="mx-auto max-w-5xl px-4 sm:px-6 py-8">
       {/* Tenant hero banner — only shows on the first (profile) step so it

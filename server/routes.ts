@@ -575,6 +575,8 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       contactLocation: req.tenant?.contact_location ?? null,
       bookerLabel: req.tenant?.booker_label ?? null,
       attendeeLabel: req.tenant?.attendee_label ?? null,
+      plan: req.tenant?.plan ?? null,
+      trialEndsAt: req.tenant?.trial_ends_at ?? null,
     });
   });
 
@@ -1081,10 +1083,19 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   // Checkout
   app.post("/api/bookings", (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    // Trial enforcement: once a tenant's free trial expires and they haven't
+    // upgraded, lock new public bookings. Admin/owner of the tenant can still
+    // book (so they can keep using the calendar privately while paying up).
+    const isAdmin = isAdminReq(req);
+    if (!isAdmin && req.tenant?.plan === "trial" && req.tenant?.trial_ends_at && Date.now() > req.tenant.trial_ends_at) {
+      return res.status(402).json({
+        error: "This booking site's free trial has ended. The coach needs to subscribe to keep accepting bookings.",
+        code: "TRIAL_EXPIRED",
+      });
+    }
     const parsed = checkoutSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const { slots: rawSlots, phone, email, parentName, playerName, notes, lessonTypeId, participants, kids } = parsed.data;
-    const isAdmin = isAdminReq(req);
     // Normalize slot inputs: legacy strings or new { start, kidIndex } objects.
     // kids[0] is conventionally the primary booker (`playerName`). When the
     // client supplied kids[], we'll create one synthetic-phone profile per

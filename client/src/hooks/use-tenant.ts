@@ -36,6 +36,8 @@ export interface Tenant {
   minLeadHours: number;
   bookerLabel: string | null;
   attendeeLabel: string | null;
+  plan: string | null;
+  trialEndsAt: number | null;
 }
 
 export function useTenant() {
