@@ -1070,8 +1070,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const parsed = checkoutSchema.safeParse(req.body);
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
-    const { slots, phone, email, parentName, playerName, notes, lessonTypeId, participants } = parsed.data;
+    const { slots: rawSlots, phone, email, parentName, playerName, notes, lessonTypeId, participants, kids } = parsed.data;
     const isAdmin = isAdminReq(req);
+    // Normalize slot inputs: legacy strings or new { start, kidIndex } objects.
+    // kids[0] is conventionally the primary booker (`playerName`). When the
+    // client supplied kids[], we'll create one synthetic-phone profile per
+    // kid index >0 and route per-slot bookings to that profile.
+    const slotsAssigned = rawSlots.map(s => typeof s === "string"
+      ? { start: s, kidIndex: 0 }
+      : { start: s.start, kidIndex: s.kidIndex ?? 0 });
+    const slots = slotsAssigned.map(s => s.start);
 
     // Resolve which coach this booking is for. Defaults to solo coach for back-compat.
     let bookingAdminUserId: number | undefined;
@@ -1091,6 +1099,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
 
     // upsert profile (primary booker)
     const profile = storage.upsertProfile(tenantId, { phone: normalizePhone(phone), email, parentName, playerName, notes });
+    // Merge kid names into the profile so we can show them next visit.
+    if (kids.length > 0) {
+      storage.mergeKidsOnProfile(tenantId, profile.id, kids.map(k => k.playerName));
+    }
     // Customers can't book inside the lead window or beyond the max booking
     // window. Admins bypass both. Both values are per-tenant (set in Branding).
     const leadMs = tenantMinLeadMs(req);
@@ -1234,8 +1246,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       });
     }
     const bookingGroup = randomUUID();
-    const rows = storage.createBookings(tenantId, slots.map(s => ({
-      start: s, profileId: profile.id, bookingGroup, createdAt: Date.now(), lessonTypeId: resolvedLessonTypeId,
+    // Multi-kid: build a profile id for each kid in the kids[] array.
+    // kids[0] always maps to the primary profile. kids[1+] get fresh
+    // synthetic-phone profile rows so bookings carry the right playerName
+    // without colliding on the (tenant_id, phone) unique index.
+    const primaryPhoneNormalized = normalizePhone(phone);
+    const kidProfileIds: number[] = [profile.id];
+    if (kids.length > 1) {
+      for (let i = 1; i < kids.length; i++) {
+        const k = kids[i];
+        // Skip if the kid name is the same as the primary (case-insensitive).
+        if (k.playerName.trim().toLowerCase() === profile.playerName.trim().toLowerCase()) {
+          kidProfileIds.push(profile.id);
+          continue;
+        }
+        const syntheticPhone = `${primaryPhoneNormalized}-k${randomUUID().slice(0, 8)}`;
+        const inserted = sqlite.prepare(
+          `INSERT INTO profiles (tenant_id, phone, email, parent_name, player_name, notes, photo_path, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, '', ?)`,
+        ).run(tenantId, syntheticPhone, email, parentName, k.playerName, k.notes || "", Date.now());
+        kidProfileIds.push(Number(inserted.lastInsertRowid));
+      }
+    }
+    const rows = storage.createBookings(tenantId, slotsAssigned.map(s => ({
+      start: s.start,
+      profileId: kidProfileIds[s.kidIndex] ?? profile.id,
+      bookingGroup,
+      createdAt: Date.now(),
+      lessonTypeId: resolvedLessonTypeId,
     })), bookingAdminUserId);
     // Build participant profile id list: primary booker first, then each extra.
     // Strategy:
@@ -1243,7 +1281,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     //  - Extra without a phone (parent booking 2+ of their own kids) -> insert
     //    a fresh profile row directly so we don't collide on phone uniqueness.
     const participantProfileIds: number[] = [profile.id];
-    const primaryPhoneNormalized = normalizePhone(phone);
     for (const p of participants) {
       const explicitPhone = normalizePhone(p.phone);
       if (explicitPhone && explicitPhone !== primaryPhoneNormalized) {
@@ -1270,12 +1307,29 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     }
     storage.addBookingParticipants(tenantId, bookingGroup, participantProfileIds);
     for (const r of rows) {
-      scheduleRemindersForBooking(r.id, r.start, profile.phone, profile.playerName, profile.email);
+      // Reminder always goes to the primary parent contact (phone/email),
+      // but the kid name in the reminder body should reflect which kid the
+      // session is for. Look up the kid via the booking's profile id.
+      const bookingProfile = storage.getProfileById(tenantId, r.profileId);
+      const kidName = bookingProfile?.playerName || profile.playerName;
+      scheduleRemindersForBooking(r.id, r.start, profile.phone, kidName, profile.email);
     }
     const expanded = rows.map(r => storage.expandBooking(tenantId, r));
     const ics = icsForBookings(expanded);
     const coachName = getSetting("coachName") || "Coach Skinner";
     const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
+
+    // Group expanded sessions by player name for kid-grouped emails.
+    // For single-kid bookings this collapses to one group identical to today's UX.
+    const sessionsByKid = new Map<string, typeof expanded>();
+    for (const b of expanded.slice().sort((a, b) => a.start.localeCompare(b.start))) {
+      const k = b.playerName || profile.playerName;
+      const list = sessionsByKid.get(k) || [];
+      list.push(b);
+      sessionsByKid.set(k, list);
+    }
+    const kidNamesInBooking = Array.from(sessionsByKid.keys());
+    const isMultiKid = kidNamesInBooking.length > 1;
 
     // Coach notification email (fire-and-forget)
     const recipients = getBookingEmailRecipients(tenantId, bookingAdminUserId);
@@ -1283,7 +1337,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const summary = expanded.map(b => `• ${b.start.replace("T", " ")}`).join("\n");
       // Collect extra participants from the first booking (group bookings share participants across sessions)
       const extras = (expanded[0]?.extraParticipants || []).map(p => `${p.playerName}${p.parentName && p.parentName !== profile.parentName ? ` (parent: ${p.parentName})` : ""}`);
-      const allPlayers = [profile.playerName, ...extras];
+      const allPlayers = isMultiKid ? kidNamesInBooking : [profile.playerName, ...extras];
       const groupSize = allPlayers.length;
       const playerListText = groupSize > 1
         ? `Players (${groupSize}):\n${allPlayers.map(n => `  - ${n}`).join("\n")}`
@@ -1291,13 +1345,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       const playerListHtml = groupSize > 1
         ? `<li><b>Players (${groupSize}):</b><ul>${allPlayers.map(n => `<li>${n}</li>`).join("")}</ul></li>`
         : `<li><b>Player:</b> ${profile.playerName}</li>`;
-      const subjectSuffix = groupSize > 1 ? ` +${groupSize - 1} others` : "";
+      // Per-kid session breakdown (only when multi-kid; otherwise reuse flat summary)
+      const kidBreakdownText = isMultiKid
+        ? "\n\nSessions by player:\n" + kidNamesInBooking.map(k =>
+            `\n${k}:\n` + (sessionsByKid.get(k) || []).map(b => `  • ${b.start.replace("T", " ")}`).join("\n"),
+          ).join("")
+        : "";
+      const kidBreakdownHtml = isMultiKid
+        ? "<p><b>Sessions by player:</b></p>" + kidNamesInBooking.map(k =>
+            `<p style="margin:8px 0 4px 0;"><b>${k}</b></p><ul>${(sessionsByKid.get(k) || []).map(b => `<li>${b.start.replace("T", " ")}</li>`).join("")}</ul>`,
+          ).join("")
+        : `<p><b>Sessions:</b></p><pre>${summary}</pre>`;
+      const subjectSuffix = isMultiKid ? ` +${kidNamesInBooking.length - 1} kid${kidNamesInBooking.length - 1 === 1 ? "" : "s"}` : (groupSize > 1 ? ` +${groupSize - 1} others` : "");
       for (const recipient of recipients) {
         sendBookingEmail({
           to: recipient,
-          subject: `New booking: ${profile.playerName}${subjectSuffix} (${expanded.length} session${expanded.length === 1 ? "" : "s"})`,
-          text: `New softball lesson booking.\n\n${playerListText}\nBooking parent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\nNotes: ${profile.notes || "(none)"}\n\nSessions:\n${summary}\n\nThe attached .ics file will add these to your Apple Calendar.`,
-          html: `<p>New softball lesson booking.</p><ul>${playerListHtml}<li><b>Booking parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li><li><b>Notes:</b> ${profile.notes || "(none)"}</li></ul><p><b>Sessions:</b></p><pre>${summary}</pre><p>The attached .ics file will add these to your Apple Calendar.</p>`,
+          subject: `New booking: ${kidNamesInBooking[0]}${subjectSuffix} (${expanded.length} session${expanded.length === 1 ? "" : "s"})`,
+          text: `New softball lesson booking.\n\n${playerListText}\nBooking parent: ${profile.parentName}\nPhone: ${profile.phone}\nEmail: ${profile.email}\nNotes: ${profile.notes || "(none)"}${isMultiKid ? kidBreakdownText : `\n\nSessions:\n${summary}`}\n\nThe attached .ics file will add these to your Apple Calendar.`,
+          html: `<p>New softball lesson booking.</p><ul>${playerListHtml}<li><b>Booking parent:</b> ${profile.parentName}</li><li><b>Phone:</b> ${profile.phone}</li><li><b>Email:</b> ${profile.email}</li><li><b>Notes:</b> ${profile.notes || "(none)"}</li></ul>${kidBreakdownHtml}<p>The attached .ics file will add these to your Apple Calendar.</p>`,
           icsContent: ics,
           icsFilename: `booking-${bookingGroup.slice(0, 8)}.ics`,
         }).catch(e => console.error("coach email send error:", e));
@@ -1309,21 +1374,34 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const sessionLines = expanded
       .slice()
       .sort((a, b) => a.start.localeCompare(b.start))
-      .map(b => `• ${formatDateLong(isoDate(b.start))} — ${formatTime(b.start.split("T")[1])}`)
+      .map(b => `• ${isMultiKid ? `[${b.playerName}] ` : ""}${formatDateLong(isoDate(b.start))} — ${formatTime(b.start.split("T")[1])}`)
       .join("\n");
-    const sessionLinesHtml = expanded
-      .slice()
-      .sort((a, b) => a.start.localeCompare(b.start))
-      .map(b => `<li>${formatDateLong(isoDate(b.start))} — ${formatTime(b.start.split("T")[1])}</li>`)
-      .join("");
+    // For HTML emails, when multi-kid, group sessions under each kid heading.
+    // Single-kid renders the original flat list.
+    const sessionLinesHtml = isMultiKid
+      ? kidNamesInBooking.map(k =>
+          `<p style="font-size:16px;margin:12px 0 4px 0;font-weight:600;color:#1f5a37;">${k}</p>` +
+          `<ul style="font-size:16px;line-height:1.7;margin:0 0 8px 18px;padding:0;">${(sessionsByKid.get(k) || []).map(b => `<li>${formatDateLong(isoDate(b.start))} — ${formatTime(b.start.split("T")[1])}</li>`).join("")}</ul>`,
+        ).join("")
+      : expanded
+          .slice()
+          .sort((a, b) => a.start.localeCompare(b.start))
+          .map(b => `<li>${formatDateLong(isoDate(b.start))} — ${formatTime(b.start.split("T")[1])}</li>`)
+          .join("");
+    const headlineHtml = isMultiKid
+      ? `<p style="font-size:16px;margin:0 0 8px 0;">You're booked! Here are your confirmed sessions for <b>${kidNamesInBooking.length}</b> players:</p>`
+      : `<p style="font-size:16px;margin:0 0 8px 0;">You're booked! Here are <b>${profile.playerName}</b>'s confirmed sessions:</p>`;
+    const sessionListWrapped = isMultiKid
+      ? sessionLinesHtml
+      : `<ul style="font-size:16px;line-height:1.7;margin:8px 0 16px 18px;padding:0;">${sessionLinesHtml}</ul>`;
 
     if ((channel === "email" || channel === "both") && profile.email) {
       const html = `<!doctype html><html><body style="margin:0;padding:0;background:#f4f6f4;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f1a14;">
         <div style="max-width:560px;margin:0 auto;padding:24px 16px;">
           <div style="background:#ffffff;border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,0.06);">
             <div style="font-size:20px;font-weight:600;margin-bottom:12px;color:#1f5a37;">${coachName} · Softball Lessons</div>
-            <p style="font-size:16px;margin:0 0 8px 0;">You're booked! Here are <b>${profile.playerName}</b>'s confirmed sessions:</p>
-            <ul style="font-size:16px;line-height:1.7;margin:8px 0 16px 18px;padding:0;">${sessionLinesHtml}</ul>
+            ${headlineHtml}
+            ${sessionListWrapped}
             <p style="font-size:14px;color:#525f57;margin:0 0 16px 0;">A calendar file (.ics) is attached — open it on your phone or laptop to add these to your calendar.</p>
             <div style="text-align:center;margin:28px 0;">
               <a href="${manageUrl}" style="display:inline-block;background:#1f5a37;color:#ffffff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;font-size:16px;">Manage your appointments</a>
@@ -1344,16 +1422,24 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           </div>
         </div></body></html>`;
       const paymentNoteForText = (req.tenant?.payment_note || "").trim();
-      const text = `${coachName} — ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed:\n${sessionLines}\n\nA calendar file (.ics) is attached for your records.\n\nManage your appointments: ${manageUrl}\nTo change or cancel, please use the link above (sign in with the email you booked with: ${profile.email || "your booking email"}). Changes are accepted up to 24 hours before the scheduled session.${paymentNoteForText ? `\n\nPayment: ${paymentNoteForText}` : ""}\n\nCancellation policy: Cancellations or no-shows within 24 hours of the scheduled session are subject to a $30 fee per 30-minute session, billed at the next lesson.`;
+      const headlineText = isMultiKid
+        ? `${coachName} — your lessons are confirmed for ${kidNamesInBooking.join(", ")}:`
+        : `${coachName} — ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed:`;
+      const text = `${headlineText}\n${sessionLines}\n\nA calendar file (.ics) is attached for your records.\n\nManage your appointments: ${manageUrl}\nTo change or cancel, please use the link above (sign in with the email you booked with: ${profile.email || "your booking email"}). Changes are accepted up to 24 hours before the scheduled session.${paymentNoteForText ? `\n\nPayment: ${paymentNoteForText}` : ""}\n\nCancellation policy: Cancellations or no-shows within 24 hours of the scheduled session are subject to a $30 fee per 30-minute session, billed at the next lesson.`;
       sendEmail({
         to: profile.email,
-        subject: `Booking confirmed: ${profile.playerName} — ${expanded.length} session${expanded.length === 1 ? "" : "s"}`,
+        subject: isMultiKid
+          ? `Booking confirmed: ${kidNamesInBooking.join(" & ")} — ${expanded.length} session${expanded.length === 1 ? "" : "s"}`
+          : `Booking confirmed: ${profile.playerName} — ${expanded.length} session${expanded.length === 1 ? "" : "s"}`,
         html, text,
         attachments: [{ filename: `lessons-${bookingGroup.slice(0, 8)}.ics`, content: ics }],
       }).catch(e => console.error("parent email send error:", e));
     }
     if ((channel === "sms" || channel === "both") && profile.phone) {
-      const smsBody = `${coachName}: ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed.\n${sessionLines}\nManage: ${manageUrl}\n\nCancellations within 24 hrs are subject to a $30/session fee. Reply STOP to opt out.`;
+      const smsHeadline = isMultiKid
+        ? `${coachName}: lessons confirmed for ${kidNamesInBooking.join(" & ")}.`
+        : `${coachName}: ${profile.playerName}'s lesson${expanded.length === 1 ? "" : "s"} confirmed.`;
+      const smsBody = `${smsHeadline}\n${sessionLines}\nManage: ${manageUrl}\n\nCancellations within 24 hrs are subject to a $30/session fee. Reply STOP to opt out.`;
       sendSms(profile.phone, smsBody).catch(e => console.error("sms confirmation error:", e));
     }
 

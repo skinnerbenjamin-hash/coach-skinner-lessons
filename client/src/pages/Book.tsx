@@ -40,7 +40,8 @@ type GapWarning = {
   message: string; suggestion?: { from: string; to: string; reason: string };
 };
 
-type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string; photoPath?: string };
+type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string; photoPath?: string; kidsJson?: string };
+type KidDraft = { name: string; notes: string };
 
 type LessonType = {
   id: number;
@@ -63,7 +64,7 @@ type LessonTypesResponse = { lessonTypes: LessonType[] };
 // One extra participant beyond the primary booker.
 type ParticipantDraft = { playerName: string; parentName: string; notes: string };
 
-type Step = "coach" | "profile" | "pick" | "review" | "done";
+type Step = "coach" | "profile" | "pick" | "assign" | "review" | "done";
 
 export default function Book() {
   const { toast } = useToast();
@@ -101,6 +102,14 @@ export default function Book() {
   const [notes, setNotes] = useState("");
   const [profileLoaded, setProfileLoaded] = useState<Profile | null>(null);
 
+  // Multi-kid: list of kids on this account. kidsList[0] is always the
+  // primary kid (mirrors playerName). Used to let parents book multiple kids
+  // in a single checkout. Stored on the profile and reloaded next visit.
+  const [kidsList, setKidsList] = useState<KidDraft[]>([{ name: "", notes: "" }]);
+  // Per-slot kid assignment. Maps slot ISO start to a kid index in kidsList.
+  // Defaults all slots to kid 0 (the primary).
+  const [slotKidIndex, setSlotKidIndex] = useState<Record<string, number>>({});
+
   // returning user email lookup
   const [lookupEmail, setLookupEmail] = useState("");
   // Pre-fill the returning-user lookup field with the email this client used
@@ -117,6 +126,32 @@ export default function Book() {
   const [pendingPhoto, setPendingPhoto] = useState<File | null>(null);
   const [pendingPhotoPreview, setPendingPhotoPreview] = useState<string | null>(null);
   const [existingPhotoPath, setExistingPhotoPath] = useState<string>("");
+
+  // Keep kidsList[0].name in sync with the primary playerName field so the
+  // existing single-kid flow still works without the user having to touch the
+  // kids editor. Both are the same value to the server.
+  useEffect(() => {
+    setKidsList(prev => {
+      if (prev.length === 0) return [{ name: playerName, notes: "" }];
+      if (prev[0].name === playerName) return prev;
+      return [{ ...prev[0], name: playerName }, ...prev.slice(1)];
+    });
+  }, [playerName]);
+
+  // Helper: parse kids saved on a returning profile.
+  const parseKidsFromProfile = (prof: Profile): KidDraft[] => {
+    try {
+      const raw = prof.kidsJson ? JSON.parse(prof.kidsJson) : [];
+      if (!Array.isArray(raw)) return [];
+      const list: KidDraft[] = raw
+        .filter(k => k && typeof k.name === "string" && k.name.trim())
+        .map(k => ({ name: String(k.name).trim(), notes: typeof k.notes === "string" ? k.notes : "" }));
+      // Make sure the primary playerName is the first kid.
+      const primary = (prof.playerName || "").trim();
+      const filtered = list.filter(k => k.name.toLowerCase() !== primary.toLowerCase());
+      return primary ? [{ name: primary, notes: "" }, ...filtered] : list;
+    } catch { return []; }
+  };
 
   // selections
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -161,7 +196,7 @@ export default function Book() {
 
   // result
   const [confirmation, setConfirmation] = useState<null | {
-    bookings: { start: string }[]; ics: string; coachTextPhone: string; coachName: string; manageUrl: string;
+    bookings: { start: string; playerName?: string }[]; ics: string; coachTextPhone: string; coachName: string; manageUrl: string;
   }>(null);
 
   // Waitlist (Phase 2): when a customer clicks 'Waitlist' on a full group slot
@@ -238,6 +273,8 @@ export default function Book() {
         setNotes(prof.notes || "");
         if (prof.email) setEmail(prof.email);
         if (prof.photoPath) setExistingPhotoPath(prof.photoPath);
+        const savedKids = parseKidsFromProfile(prof);
+        if (savedKids.length > 0) setKidsList(savedKids);
       } else {
         setProfileLoaded(null);
       }
@@ -269,6 +306,8 @@ export default function Book() {
       setPlayerName(prof.playerName);
       setNotes(prof.notes || "");
       if (prof.photoPath) setExistingPhotoPath(prof.photoPath);
+      const savedKids = parseKidsFromProfile(prof);
+      if (savedKids.length > 0) setKidsList(savedKids);
       rememberEmail(prof.email || e);
       setStep("pick");
       toast({ title: `Welcome back, ${prof.parentName}`, description: "We loaded your info — pick your times." });
@@ -312,16 +351,35 @@ export default function Book() {
     });
   }
 
+  // Trim kidsList to entries with non-empty names. The primary kid is the
+  // first one (mirrors `playerName`). Used both to enforce the assign-step
+  // UI and to build the checkout payload.
+  const effectiveKids = useMemo(() => {
+    return kidsList
+      .map(k => ({ name: k.name.trim(), notes: k.notes.trim() }))
+      .filter(k => k.name.length > 0);
+  }, [kidsList]);
+  const isMultiKid = effectiveKids.length > 1;
+
   // submit
   const checkout = useMutation({
     mutationFn: async () => {
+      // Build per-slot assignments. Each slot ISO -> kidIndex (0-based).
+      // If the parent never visited the assign step, default everyone to kid 0.
+      const slotsWithKids = Array.from(selected).map(s => ({
+        start: s,
+        kidIndex: Math.min(slotKidIndex[s] ?? 0, Math.max(0, effectiveKids.length - 1)),
+      }));
       const r = await apiRequest("POST", "/api/bookings", {
-        slots: Array.from(selected),
+        slots: isMultiKid ? slotsWithKids : Array.from(selected),
         phone: normalizePhone(phone),
         email: email.trim(),
         parentName, playerName, notes,
         lessonTypeId: selectedLessonTypeId ?? undefined,
         coachId: selectedCoachId ?? undefined,
+        // Multi-kid: send the list of kids so the server can store them on
+        // the profile and route each slot to the right kid's booking row.
+        kids: effectiveKids.map(k => ({ playerName: k.name, notes: k.notes })),
         // Filter out empty participant rows; server requires playerName + parentName
         participants: participants
           .filter(p => p.playerName.trim() && p.parentName.trim())
@@ -388,6 +446,37 @@ export default function Book() {
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b));
   }, [selected]);
 
+  // For multi-kid: group slots by kid, then by date within each kid.
+  // Returns: [{ kidIndex, name, byDate: [[date, slots], ...] }, ...]
+  const selectedByKid = useMemo(() => {
+    if (effectiveKids.length === 0) return [];
+    const buckets: { kidIndex: number; name: string; slots: string[] }[] = effectiveKids.map((k, i) => ({
+      kidIndex: i,
+      name: k.name || `Kid ${i + 1}`,
+      slots: [],
+    }));
+    for (const s of selected) {
+      const idx = Math.min(slotKidIndex[s] ?? 0, Math.max(0, effectiveKids.length - 1));
+      buckets[idx]?.slots.push(s);
+    }
+    return buckets
+      .filter(b => b.slots.length > 0)
+      .map(b => {
+        const m = new Map<string, string[]>();
+        for (const s of b.slots) {
+          const d = s.split("T")[0];
+          if (!m.has(d)) m.set(d, []);
+          m.get(d)!.push(s);
+        }
+        for (const arr of m.values()) arr.sort();
+        return {
+          kidIndex: b.kidIndex,
+          name: b.name,
+          byDate: [...m.entries()].sort(([a], [b]) => a.localeCompare(b)),
+        };
+      });
+  }, [selected, slotKidIndex, effectiveKids]);
+
   // Simple email format check — server also validates with z.string().email()
   const emailLooksValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
   const validProfile = normalizePhone(phone).length >= 10 && emailLooksValid && parentName.trim() && playerName.trim();
@@ -429,7 +518,7 @@ export default function Book() {
         </div>
       )}
 
-      <Stepper step={step} showCoachStep={showCoachPicker} />
+      <Stepper step={step} showCoachStep={showCoachPicker} showAssignStep={isMultiKid} />
 
       {/* Coach picker step — shown when 2+ coaches give lessons */}
       {step === "coach" && showCoachPicker && (
@@ -577,6 +666,70 @@ export default function Book() {
                   value={notes}
                   onChange={(e) => setNotes(e.target.value)}
                 />
+              </div>
+            </div>
+
+            {/* Multi-kid: families can list additional kids on this account so
+                they can pick days for each kid in one checkout. kidsList[0] is
+                always the primary playerName above. */}
+            <div className="rounded-lg border border-border p-4 space-y-3" data-testid="section-kids">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div className="text-sm font-medium">Other kids on this account</div>
+                  <p className="text-xs text-muted-foreground mt-0.5">
+                    Booking for siblings? Add them here — you'll pick times together and we'll group the confirmation by name.
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setKidsList(prev => [...prev, { name: "", notes: "" }])}
+                  data-testid="button-add-kid"
+                >
+                  Add another kid
+                </Button>
+              </div>
+              {kidsList.slice(1).length === 0 && (
+                <p className="text-xs text-muted-foreground italic">
+                  Only one kid on this account so far. Use the {labels.attendee.toLowerCase()} name field above.
+                </p>
+              )}
+              <div className="space-y-2">
+                {kidsList.slice(1).map((k, i) => {
+                  const idx = i + 1; // real index in kidsList
+                  return (
+                    <div key={idx} className="grid sm:grid-cols-[1fr_1fr_auto] gap-2 items-end" data-testid={`row-kid-${idx}`}>
+                      <div>
+                        <Label className="text-xs">{labels.attendee} name *</Label>
+                        <Input
+                          value={k.name}
+                          placeholder="Name"
+                          onChange={(e) => setKidsList(prev => prev.map((x, j) => j === idx ? { ...x, name: e.target.value } : x))}
+                          data-testid={`input-kid-name-${idx}`}
+                        />
+                      </div>
+                      <div>
+                        <Label className="text-xs">Focus areas (optional)</Label>
+                        <Input
+                          value={k.notes}
+                          placeholder="What they'd like to work on"
+                          onChange={(e) => setKidsList(prev => prev.map((x, j) => j === idx ? { ...x, notes: e.target.value } : x))}
+                          data-testid={`input-kid-notes-${idx}`}
+                        />
+                      </div>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => setKidsList(prev => prev.filter((_, j) => j !== idx))}
+                        data-testid={`button-remove-kid-${idx}`}
+                      >
+                        Remove
+                      </Button>
+                    </div>
+                  );
+                })}
               </div>
             </div>
 
@@ -851,12 +1004,92 @@ export default function Book() {
               </Button>
               <Button
                 disabled={selected.size === 0}
-                onClick={() => setStep("review")}
+                onClick={() => {
+                  if (isMultiKid) {
+                    // Default every newly selected slot to kid 0 if not yet assigned.
+                    setSlotKidIndex(prev => {
+                      const next = { ...prev };
+                      for (const s of selected) if (next[s] === undefined) next[s] = 0;
+                      return next;
+                    });
+                    setStep("assign");
+                  } else {
+                    setStep("review");
+                  }
+                }}
                 data-testid="button-go-to-review"
               >
-                Review & checkout
+                {isMultiKid ? "Continue → assign kids" : "Review & checkout"}
               </Button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {step === "assign" && (
+        <div className="mt-6 space-y-4">
+          <h1 className="text-xl font-semibold">Who is each session for?</h1>
+          <p className="text-sm text-muted-foreground">
+            You've selected {selected.size} session{selected.size === 1 ? "" : "s"} across {effectiveKids.length} kids.
+            Pick which kid each session is for. You can change any of these on the review step.
+          </p>
+
+          {/* Bulk-assign shortcuts: handy when most sessions are for one kid. */}
+          <div className="flex flex-wrap items-center gap-2 text-xs">
+            <span className="text-muted-foreground">Assign all to:</span>
+            {effectiveKids.map((k, i) => (
+              <Button
+                key={i}
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  const next: Record<string, number> = {};
+                  for (const s of selected) next[s] = i;
+                  setSlotKidIndex(next);
+                }}
+                data-testid={`button-assign-all-${i}`}
+              >
+                {k.name || `Kid ${i + 1}`}
+              </Button>
+            ))}
+          </div>
+
+          <Card>
+            <CardContent className="p-6 space-y-3">
+              {selectedByDate.map(([date, slots]) => (
+                <div key={date}>
+                  <div className="font-medium">{formatDateFull(date)}</div>
+                  <ul className="mt-1 space-y-2">
+                    {slots.map(s => {
+                      const currentIdx = slotKidIndex[s] ?? 0;
+                      return (
+                        <li key={s} className="flex items-center justify-between gap-3 text-sm">
+                          <span className="min-w-0" data-testid={`text-assign-slot-${s}`}>{formatIsoStartEnd(s)}</span>
+                          <select
+                            className="text-sm rounded-md border border-border bg-background px-2 py-1"
+                            value={currentIdx}
+                            onChange={(e) => setSlotKidIndex(prev => ({ ...prev, [s]: Number(e.target.value) }))}
+                            data-testid={`select-kid-${s}`}
+                          >
+                            {effectiveKids.map((k, i) => (
+                              <option key={i} value={i}>{k.name || `Kid ${i + 1}`}</option>
+                            ))}
+                          </select>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-between">
+            <Button variant="ghost" onClick={() => setStep("pick")} data-testid="button-assign-back">Back</Button>
+            <Button onClick={() => setStep("review")} data-testid="button-assign-continue">
+              Continue to review
+            </Button>
           </div>
         </div>
       )}
@@ -928,33 +1161,67 @@ export default function Book() {
 
               <Separator />
 
-              <div className="space-y-3">
-                {selectedByDate.map(([date, slots]) => (
-                  <div key={date}>
-                    <div className="font-medium">{formatDateFull(date)}</div>
-                    <ul className="mt-1 space-y-1">
-                      {slots.map(s => (
-                        <li key={s} className="flex items-center justify-between text-sm">
-                          <span data-testid={`text-review-slot-${s}`}>{formatIsoStartEnd(s)}</span>
-                          <button
-                            className="text-muted-foreground hover:text-destructive p-1"
-                            onClick={() => setSelected(p => { const n = new Set(p); n.delete(s); return n; })}
-                            aria-label="Remove"
-                            data-testid={`button-remove-${s}`}
-                          >
-                            <X className="h-4 w-4" />
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
+              {isMultiKid ? (
+                <div className="space-y-5">
+                  {selectedByKid.map(group => (
+                    <div key={group.kidIndex} data-testid={`review-kid-${group.kidIndex}`}>
+                      <div className="font-semibold text-base mb-2" data-testid={`text-review-kid-name-${group.kidIndex}`}>
+                        {group.name}
+                      </div>
+                      <div className="space-y-3 pl-3 border-l-2 border-border">
+                        {group.byDate.map(([date, slots]) => (
+                          <div key={date}>
+                            <div className="font-medium text-sm">{formatDateFull(date)}</div>
+                            <ul className="mt-1 space-y-1">
+                              {slots.map(s => (
+                                <li key={s} className="flex items-center justify-between text-sm">
+                                  <span data-testid={`text-review-slot-${s}`}>{formatIsoStartEnd(s)}</span>
+                                  <button
+                                    className="text-muted-foreground hover:text-destructive p-1"
+                                    onClick={() => setSelected(p => { const n = new Set(p); n.delete(s); return n; })}
+                                    aria-label="Remove"
+                                    data-testid={`button-remove-${s}`}
+                                  >
+                                    <X className="h-4 w-4" />
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="space-y-3">
+                  {selectedByDate.map(([date, slots]) => (
+                    <div key={date}>
+                      <div className="font-medium">{formatDateFull(date)}</div>
+                      <ul className="mt-1 space-y-1">
+                        {slots.map(s => (
+                          <li key={s} className="flex items-center justify-between text-sm">
+                            <span data-testid={`text-review-slot-${s}`}>{formatIsoStartEnd(s)}</span>
+                            <button
+                              className="text-muted-foreground hover:text-destructive p-1"
+                              onClick={() => setSelected(p => { const n = new Set(p); n.delete(s); return n; })}
+                              aria-label="Remove"
+                              data-testid={`button-remove-${s}`}
+                            >
+                              <X className="h-4 w-4" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
 
           <div className="flex justify-between">
-            <Button variant="ghost" onClick={() => setStep("pick")}>Back</Button>
+            <Button variant="ghost" onClick={() => setStep(isMultiKid ? "assign" : "pick")}>Back</Button>
             <Button
               onClick={() => checkout.mutate()}
               disabled={selected.size === 0 || checkout.isPending}
@@ -986,13 +1253,47 @@ export default function Book() {
               A confirmation email is on its way to <span className="font-medium">{email}</span> with a
               calendar file attached. We'll email reminders 5 days and 2 days before each session.
             </p>
-            <ul className="text-sm space-y-1">
-              {confirmation.bookings.map((b) => (
-                <li key={b.start} data-testid={`text-confirmed-${b.start}`}>
-                  • {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
-                </li>
-              ))}
-            </ul>
+            {(() => {
+              // Group confirmed bookings by playerName when there are 2+ unique kids.
+              const byKid = new Map<string, typeof confirmation.bookings>();
+              for (const b of confirmation.bookings) {
+                const k = b.playerName || playerName || "Player";
+                if (!byKid.has(k)) byKid.set(k, []);
+                byKid.get(k)!.push(b);
+              }
+              const kidNames = [...byKid.keys()];
+              const showByKid = kidNames.length > 1;
+              if (!showByKid) {
+                return (
+                  <ul className="text-sm space-y-1">
+                    {confirmation.bookings.map((b) => (
+                      <li key={b.start} data-testid={`text-confirmed-${b.start}`}>
+                        • {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
+                      </li>
+                    ))}
+                  </ul>
+                );
+              }
+              return (
+                <div className="space-y-4">
+                  {kidNames.map(name => {
+                    const sessions = [...byKid.get(name)!].sort((a, b) => a.start.localeCompare(b.start));
+                    return (
+                      <div key={name} data-testid={`done-kid-${name}`}>
+                        <div className="font-semibold text-sm mb-1" data-testid={`text-done-kid-name-${name}`}>{name}</div>
+                        <ul className="text-sm space-y-1 pl-3 border-l-2 border-border">
+                          {sessions.map(b => (
+                            <li key={b.start} data-testid={`text-confirmed-${b.start}`}>
+                              • {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
             <Alert className="border-primary/40 bg-primary/5">
               <AlertDescription>
                 <div className="font-semibold text-sm mb-1">Save this link — it's how you cancel or reschedule</div>
@@ -1178,10 +1479,11 @@ export default function Book() {
   );
 }
 
-function Stepper({ step, showCoachStep }: { step: Step; showCoachStep?: boolean }) {
+function Stepper({ step, showCoachStep, showAssignStep }: { step: Step; showCoachStep?: boolean; showAssignStep?: boolean }) {
   const baseSteps: { id: Step; label: string }[] = [
     { id: "profile", label: "Your info" },
     { id: "pick", label: "Pick times" },
+    ...(showAssignStep ? [{ id: "assign" as Step, label: "Assign kids" }] : []),
     { id: "review", label: "Review" },
     { id: "done", label: "Done" },
   ];

@@ -124,8 +124,13 @@ export const profiles = sqliteTable("profiles", {
   playerName: text("player_name").notNull(),
   notes: text("notes").notNull().default(""),
   photoPath: text("photo_path").notNull().default(""),
+  // JSON array of { name: string, notes?: string } — kids on this parent's
+  // account so multi-kid families don't re-type names every booking. The
+  // primary `playerName` above is still the "default" / most-recent kid.
+  kidsJson: text("kids_json").notNull().default("[]"),
   createdAt: integer("created_at").notNull(),
 });
+export type Kid = { name: string; notes?: string };
 export const insertProfileSchema = createInsertSchema(profiles).omit({ id: true, createdAt: true, tenantId: true });
 export type InsertProfile = z.infer<typeof insertProfileSchema>;
 export type Profile = typeof profiles.$inferSelect;
@@ -348,8 +353,23 @@ export const checkoutParticipantSchema = z.object({
 });
 export type CheckoutParticipant = z.infer<typeof checkoutParticipantSchema>;
 
+// Multi-kid: each slot can optionally be assigned to a kid by index into
+// the `kids` array. Index 0 = primary booker (the parent's main player).
+// Indices 1+ map to synthetic-phone profile rows created at checkout time.
+export const checkoutSlotSchema = z.union([
+  z.string(),
+  z.object({ start: z.string(), kidIndex: z.number().int().min(0).default(0) }),
+]);
+export type CheckoutSlot = z.infer<typeof checkoutSlotSchema>;
+
+export const checkoutKidSchema = z.object({
+  playerName: z.string().min(1),
+  notes: z.string().default(""),
+});
+export type CheckoutKid = z.infer<typeof checkoutKidSchema>;
+
 export const checkoutSchema = z.object({
-  slots: z.array(z.string()).min(1),
+  slots: z.array(checkoutSlotSchema).min(1),
   phone: z.string().min(7),
   email: z.string().email(),
   parentName: z.string().min(1),
@@ -358,6 +378,9 @@ export const checkoutSchema = z.object({
   lessonTypeId: z.number().int().positive().optional(),
   // Extra group participants beyond the primary booker. Empty/omitted for solo.
   participants: z.array(checkoutParticipantSchema).default([]),
+  // Multi-kid: when provided, each slot can be assigned to a kid by index.
+  // kids[0] is conventionally the primary booker (playerName above).
+  kids: z.array(checkoutKidSchema).default([]),
 });
 export type CheckoutPayload = z.infer<typeof checkoutSchema>;
 

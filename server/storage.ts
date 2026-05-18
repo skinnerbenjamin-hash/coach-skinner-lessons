@@ -95,6 +95,9 @@ try {
   if (!cols.some(c => c.name === "photo_path")) {
     sqlite.exec(`ALTER TABLE profiles ADD COLUMN photo_path TEXT NOT NULL DEFAULT ''`);
   }
+  if (!cols.some(c => c.name === "kids_json")) {
+    sqlite.exec(`ALTER TABLE profiles ADD COLUMN kids_json TEXT NOT NULL DEFAULT '[]'`);
+  }
 } catch (e) { console.error("profiles migration failed:", e); }
 
 // Migration: add media columns to existing coaching_notes table that pre-date attachments.
@@ -255,6 +258,35 @@ export class DatabaseStorage {
       notes: input.notes ?? "",
       createdAt: Date.now(),
     }).returning().get();
+  }
+  // Merge a list of kid names into the profile's kidsJson. Case-insensitive
+  // dedup by trimmed name. The primary playerName is always included as the
+  // first entry. Returns the updated profile.
+  mergeKidsOnProfile(tenantId: number, profileId: number, kidNames: string[]): Profile | undefined {
+    const existing = this.getProfileById(tenantId, profileId);
+    if (!existing) return undefined;
+    let current: { name: string; notes?: string }[] = [];
+    try {
+      const parsed = JSON.parse((existing as any).kidsJson || "[]");
+      if (Array.isArray(parsed)) current = parsed.filter(k => k && typeof k.name === "string");
+    } catch {}
+    const seen = new Set<string>();
+    const result: { name: string; notes?: string }[] = [];
+    const pushKid = (name: string, notes?: string) => {
+      const t = name.trim();
+      if (!t) return;
+      const key = t.toLowerCase();
+      if (seen.has(key)) return;
+      seen.add(key);
+      result.push(notes ? { name: t, notes } : { name: t });
+    };
+    // Primary player first, then any incoming names, then any pre-existing.
+    pushKid(existing.playerName);
+    for (const n of kidNames) pushKid(n);
+    for (const k of current) pushKid(k.name, k.notes);
+    sqlite.prepare(`UPDATE profiles SET kids_json=? WHERE tenant_id=? AND id=?`)
+      .run(JSON.stringify(result), tenantId, profileId);
+    return this.getProfileById(tenantId, profileId);
   }
 
   // Coaching notes
