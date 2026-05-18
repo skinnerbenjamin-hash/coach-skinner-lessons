@@ -275,12 +275,24 @@ function openWindowsForDate(tenantId: number, date: string, adminUserId?: number
 //   - isGroupFilter=true  -> windows with mode in {"group", "both"}
 //   - isGroupFilter=false -> windows with mode in {"solo", "both"}
 //   - isGroupFilter=null  -> all windows (legacy behavior, used by admin views)
-function slotsForDate(tenantId: number, date: string, isGroupFilter: boolean | null = null, adminUserId?: number) {
+//
+// `durationMin` is the length of the lesson the customer is booking. We only
+// surface slot starts where start + durationMin fits inside an open window —
+// otherwise a 60-min lesson could be booked at 7:30 PM inside a 4-8 PM window
+// and run 30 min past close. Defaults to SLOT_MIN (30 min) for legacy callers.
+function slotsForDate(
+  tenantId: number,
+  date: string,
+  isGroupFilter: boolean | null = null,
+  adminUserId?: number,
+  durationMin: number = SLOT_MIN,
+) {
+  const dur = Math.max(SLOT_MIN, durationMin);
   const out: string[] = [];
   for (const w of openWindowsForDate(tenantId, date, adminUserId)) {
     if (isGroupFilter === true && w.mode === "solo") continue;
     if (isGroupFilter === false && w.mode === "group") continue;
-    for (let m = w.start; m + SLOT_MIN <= w.end; m += SLOT_MIN) out.push(toIso(date, minToTime(m)));
+    for (let m = w.start; m + dur <= w.end; m += SLOT_MIN) out.push(toIso(date, minToTime(m)));
   }
   return out;
 }
@@ -363,8 +375,9 @@ function availabilityForRange(
   }
   const days: { date: string; slots: { start: string; booked: boolean; remainingSpots?: number }[] }[] = [];
   let cur = startDate;
+  const ltDuration = forLessonType?.durationMin ?? SLOT_MIN;
   while (cur <= endDate) {
-    const slots = slotsForDate(tenantId, cur, isGroupFilter, adminUserId).map(s => {
+    const slots = slotsForDate(tenantId, cur, isGroupFilter, adminUserId, ltDuration).map(s => {
       if (!forLessonType) {
         // No lesson type picked — use the legacy semantics (admin view).
         return { start: s, booked: bookedSet.has(s) };
@@ -1141,23 +1154,27 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       resolvedIsGroup = ((lt as any).isGroup ?? 0) === 1;
     }
     // Window-mode gate: every requested slot must fall inside an open window
-    // whose mode is compatible with the lesson type's isGroup flag.
+    // whose mode is compatible with the lesson type's isGroup flag, AND the
+    // full lesson duration must fit inside the window (a 60-min lesson can't
+    // start at 7:30 PM in a 4-8 PM window).
     // Admins can bypass this so they can manually slot in special cases.
     if (!isAdmin && resolvedLessonTypeId != null) {
+      const ltForCheck = storage.getLessonTypeById(tenantId, resolvedLessonTypeId);
+      const ltDur = ltForCheck?.durationMin ?? SLOT_MIN;
       for (const s of slots) {
         const date = isoDate(s);
         const startMin = isoToMin(s);
         const wins = openWindowsForDate(tenantId, date, bookingAdminUserId);
         const ok = wins.some(w => {
-          if (startMin < w.start || startMin + SLOT_MIN > w.end) return false;
+          if (startMin < w.start || startMin + ltDur > w.end) return false;
           if (w.mode === "both") return true;
           return resolvedIsGroup ? w.mode === "group" : w.mode === "solo";
         });
         if (!ok) {
           return res.status(400).json({
             error: resolvedIsGroup
-              ? "That time slot isn't open for group lessons. Please pick a group-eligible slot."
-              : "That time slot isn't open for solo lessons. Please pick a solo-eligible slot.",
+              ? "That time slot isn't open for group lessons. Please pick a group-eligible slot that fits the full lesson length."
+              : "That time slot isn't open for solo lessons. Please pick a solo-eligible slot that fits the full lesson length.",
           });
         }
       }
@@ -1734,8 +1751,14 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     // collision
     const existing = storage.getBookingsByStarts(tenantId, [newStart]).filter(x => x.id !== id);
     if (existing.length) return res.status(409).json({ error: "That time is already booked." });
-    // ensure newStart is a valid available slot
-    const validSlots = new Set(slotsForDate(tenantId, isoDate(newStart)));
+    // ensure newStart is a valid available slot — and that the lesson's full
+    // duration fits inside the open window at the new start time.
+    const rescheduleDur = b.lessonTypeId != null
+      ? (storage.getLessonTypeById(tenantId, b.lessonTypeId)?.durationMin ?? SLOT_MIN)
+      : SLOT_MIN;
+    const validSlots = new Set(
+      slotsForDate(tenantId, isoDate(newStart), null, b.adminUserId ?? undefined, rescheduleDur)
+    );
     if (!validSlots.has(newStart)) return res.status(400).json({ error: "Not an open time slot." });
     const oldStart = b.start;
     storage.updateBookingStart(tenantId, id, newStart);
