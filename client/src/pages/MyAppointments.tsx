@@ -13,6 +13,7 @@ import {
   Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter,
 } from "@/components/ui/dialog";
 import { apiRequest } from "@/lib/queryClient";
+import { getRememberedEmail, rememberEmail } from "@/lib/client-session";
 import { useToast } from "@/hooks/use-toast";
 import {
   normalizePhone, formatPhone, formatDateFull, formatIsoStartEnd, isWithin24h,
@@ -39,15 +40,13 @@ export default function MyAppointments() {
   const qc = useQueryClient();
   const { toast } = useToast();
 
-  // Restore last-used email so people don't have to retype after edits
+  // Restore last-used email so people don't have to retype across pages
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("csb-last-email");
-      if (stored) {
-        setEmailInput(stored);
-        setActiveEmail(stored);
-      }
-    } catch {}
+    const stored = getRememberedEmail();
+    if (stored) {
+      setEmailInput(stored);
+      setActiveEmail(stored);
+    }
   }, []);
 
   const { data, isLoading, isError } = useQuery<{ profile: Profile | null; bookings: Booking[] }>({
@@ -76,7 +75,7 @@ export default function MyAppointments() {
       toast({ variant: "destructive", title: "Enter a valid email" });
       return;
     }
-    try { localStorage.setItem("csb-last-email", email); } catch {}
+    rememberEmail(email);
     setActiveEmail(email);
   }
 
@@ -263,7 +262,7 @@ function EditProfileDialog({ profile }: { profile: Profile }) {
     onSuccess: (updated: Profile) => {
       // If email changed, store the new email for next lookup
       if (updated?.email) {
-        try { localStorage.setItem("csb-last-email", updated.email.toLowerCase()); } catch {}
+        rememberEmail(updated.email);
       }
       qc.invalidateQueries({ queryKey: ["/api/my-bookings-by-email"] });
       toast({ title: "Info updated" });

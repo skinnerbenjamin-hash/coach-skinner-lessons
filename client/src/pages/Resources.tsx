@@ -10,6 +10,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { apiRequest } from "@/lib/queryClient";
+import { getRememberedEmail, rememberEmail } from "@/lib/client-session";
 import { useToast } from "@/hooks/use-toast";
 import { FileText, ExternalLink, Image as ImageIcon, Lock, Search, Video } from "lucide-react";
 import { useTenant } from "@/hooks/use-tenant";
@@ -57,13 +58,11 @@ export default function Resources() {
   const businessName = tenantInfo?.name || "the instructor";
 
   useEffect(() => {
-    try {
-      const stored = localStorage.getItem("csb-last-email");
-      if (stored) {
-        setEmailInput(stored);
-        setActiveEmail(stored);
-      }
-    } catch {}
+    const stored = getRememberedEmail();
+    if (stored) {
+      setEmailInput(stored);
+      setActiveEmail(stored);
+    }
   }, []);
 
   const { data, isLoading, isError, error } = useQuery<{ resources: Resource[]; categories: Array<{ id: string; label: string } | string> }>({
@@ -89,7 +88,7 @@ export default function Resources() {
       toast({ variant: "destructive", title: "Enter a valid email" });
       return;
     }
-    try { localStorage.setItem("csb-last-email", email); } catch {}
+    rememberEmail(email);
     setActiveEmail(email);
   }
 

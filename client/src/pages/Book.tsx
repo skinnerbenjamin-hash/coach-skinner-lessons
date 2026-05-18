@@ -10,6 +10,7 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { apiRequest, queryClient } from "@/lib/queryClient";
+import { getRememberedEmail, rememberEmail } from "@/lib/client-session";
 import {
   addDays, todayISO, formatTime, formatDateLong, formatDateFull,
   formatIsoStartEnd, formatPhone, normalizePhone, downloadICS,
@@ -102,6 +103,13 @@ export default function Book() {
 
   // returning user email lookup
   const [lookupEmail, setLookupEmail] = useState("");
+  // Pre-fill the returning-user lookup field with the email this client used
+  // last time they visited any page (MyAppointments / Resources / Book), so
+  // they don't have to retype it every visit. Empty if no prior session.
+  useEffect(() => {
+    const stored = getRememberedEmail();
+    if (stored) setLookupEmail(stored);
+  }, []);
   const [lookupError, setLookupError] = useState<string | null>(null);
   const [lookupBusy, setLookupBusy] = useState(false);
 
@@ -261,6 +269,7 @@ export default function Book() {
       setPlayerName(prof.playerName);
       setNotes(prof.notes || "");
       if (prof.photoPath) setExistingPhotoPath(prof.photoPath);
+      rememberEmail(prof.email || e);
       setStep("pick");
       toast({ title: `Welcome back, ${prof.parentName}`, description: "We loaded your info — pick your times." });
     } catch (err: any) {
@@ -357,6 +366,9 @@ export default function Book() {
       setStep("done");
       setPendingPhoto(null);
       if (pendingPhotoPreview) { URL.revokeObjectURL(pendingPhotoPreview); setPendingPhotoPreview(null); }
+      // Remember this booker's email so MyAppointments/Resources can skip the
+      // email-lookup step on their next visit.
+      rememberEmail(email);
       queryClient.invalidateQueries({ queryKey: ["/api/slots"] });
     },
     onError: (e: any) => {
