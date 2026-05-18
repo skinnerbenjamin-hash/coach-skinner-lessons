@@ -22,8 +22,12 @@ export default function Demo() {
   function goSignup() {
     window.location.hash = "#/signup";
   }
+  // The demo page IS the landing page (apex root), so "home" links just scroll
+  // back to the top rather than navigating anywhere.
   function goHome() {
-    window.location.hash = "#/";
+    if (typeof window !== "undefined") {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }
 
   return (
@@ -40,13 +44,6 @@ export default function Demo() {
             <span>LessonSpot</span>
           </button>
           <nav className="flex items-center gap-2">
-            <button
-              onClick={goHome}
-              className="text-sm text-muted-foreground hover:text-foreground px-3 py-2 hidden sm:inline-block"
-              data-testid="link-demo-back"
-            >
-              Back to home
-            </button>
             <Button
               variant="default"
               size="sm"

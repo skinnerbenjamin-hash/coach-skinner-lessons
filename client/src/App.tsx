@@ -12,7 +12,6 @@ import Admin from "@/pages/Admin";
 import ResetPassword from "@/pages/ResetPassword";
 import Resources from "@/pages/Resources";
 import Signup from "@/pages/Signup";
-import Marketing from "@/pages/Marketing";
 import Demo from "@/pages/Demo";
 import SiteNotFound from "@/pages/SiteNotFound";
 import { Header } from "@/components/Header";
@@ -57,16 +56,16 @@ function useLoginHandoff() {
 function AppRouter() {
   useLoginHandoff();
 
-  // On the apex host we serve a marketing-only experience.  /signup is the
-  // one app route allowed through so people can sign up directly from
-  // lessonspot.app/#/signup; everything else routes to the marketing landing.
+  // On the apex host we serve the demo-video landing as the entire marketing
+  // experience. /signup is the one app route allowed through so people can
+  // sign up directly from lessonspot.app/#/signup; everything else (including
+  // legacy /demo links) falls through to the same Demo landing page.
   if (IS_APEX) {
     return (
       <div className="min-h-screen bg-background">
         <Switch>
           <Route path="/signup" component={Signup} />
-          <Route path="/demo" component={Demo} />
-          <Route component={Marketing} />
+          <Route component={Demo} />
         </Switch>
       </div>
     );
