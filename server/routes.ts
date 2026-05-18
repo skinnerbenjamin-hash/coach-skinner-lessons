@@ -935,8 +935,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!parsed.success) return res.status(400).json({ error: parsed.error.flatten() });
     const override = storage.addDateOverride(tenantId, parsed.data, overrideAdminUserId);
 
-    // If this is a 'closed' blackout, cancel every booking on that date and notify the parents
-    // via the configured reminder channel (email by default, with SMS fallback).
+    // If this is a 'closed' blackout, cancel every booking on that date and email the parents.
+    // Cancellation notices are EMAIL ONLY — SMS is intentionally not used here even if the
+    // tenant's reminderChannel is "sms" or "both", because SMS delivery is unreliable
+    // (A2P registration, Twilio config) and silently failing leaves families uninformed.
     const cancelled: { id: number; start: string; playerName: string; parentName: string; phone: string; email: string; notified: boolean; notifyError?: string }[] = [];
     if (parsed.data.type === "closed") {
       const date = parsed.data.date;
@@ -951,7 +953,6 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       }
       const coachName = getSetting("coachName") || "Coach Skinner";
       const dateLong = formatDateLong(date);
-      const channel = (getSetting("reminderChannel") || "email").toLowerCase();
       const manageUrl = (process.env.PUBLIC_SITE_URL || getSetting("publicSiteUrl") || "").replace(/\/$/, "") + "/#/my-appointments";
       for (const [_profileId, rows] of byProfile) {
         const phone = rows[0].phone;
@@ -960,9 +961,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
         const playerNames = Array.from(new Set(rows.map(r => r.playerName))).join(" & ");
         const msg = `Really sorry — ${coachName} has to cancel lessons on ${dateLong}. Affected: ${playerNames} at ${times}. Please reach out to reschedule.`;
 
-        let okAny = false;
-        let errParts: string[] = [];
-        if ((channel === "email" || channel === "both") && email) {
+        let notified = false;
+        let notifyError: string | undefined;
+        if (email) {
           const html = `<!doctype html><html><body style="margin:0;padding:0;background:#f4f6f4;font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f1a14;"><div style="max-width:560px;margin:0 auto;padding:24px 16px;"><div style="background:#ffffff;border-radius:12px;padding:24px;"><div style="font-size:20px;font-weight:600;color:#a33;margin-bottom:12px;">Lesson cancelled — ${dateLong}</div><p style="font-size:16px;line-height:1.5;margin:0 0 12px 0;">${msg}</p><p style="font-size:14px;color:#525f57;margin:8px 0 24px 0;">Sessions cancelled: <b>${playerNames}</b> at <b>${times}</b>.</p><div style="text-align:center;margin:24px 0;"><a href="${manageUrl}" style="display:inline-block;background:#1f5a37;color:#fff;text-decoration:none;padding:14px 28px;border-radius:8px;font-weight:600;">Book a different time</a></div></div></div></body></html>`;
           const r = await sendEmail({
             to: email,
@@ -970,11 +971,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
             html,
             text: `${msg}\n\nBook a different time: ${manageUrl}`,
           });
-          if (r.ok) okAny = true; else errParts.push(`email: ${r.error}`);
-        }
-        if ((channel === "sms" || channel === "both") && phone) {
-          const r = await sendSms(phone, `${msg} Reply STOP to opt out.`);
-          if (r.ok) okAny = true; else errParts.push(`sms: ${r.error}`);
+          if (r.ok) notified = true; else notifyError = `email: ${r.error}`;
+        } else {
+          notifyError = "no email on file";
         }
         for (const r of rows) {
           cancelRemindersForBooking(r.id);
@@ -982,7 +981,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
           cancelled.push({
             id: r.id, start: r.start, playerName: r.playerName, parentName: r.parentName,
             phone, email,
-            notified: okAny, notifyError: okAny ? undefined : (errParts.join("; ") || "No channel configured"),
+            notified, notifyError,
           });
         }
       }
