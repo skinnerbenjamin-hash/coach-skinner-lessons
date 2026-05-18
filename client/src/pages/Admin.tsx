@@ -249,16 +249,27 @@ function AdminLogin() {
 
 function SignOutButton() {
   const qc = useQueryClient();
+  const { toast } = useToast();
   const signOut = useMutation({
     mutationFn: async () => { await apiRequest("POST", "/api/auth/logout", {}); },
     onSuccess: () => {
-      qc.clear();
-      qc.invalidateQueries({ queryKey: ["/api/auth/me"] });
+      // Flip auth state synchronously so the Admin gate re-renders to login
+      // immediately. qc.clear() removes the observer so a follow-up invalidate
+      // has nothing to refetch — setQueryData updates in place instead.
+      qc.setQueryData(["/api/auth/me"], { authed: false });
+      // Drop all other cached queries so the next signed-in session starts
+      // with a fresh slate.
+      qc.removeQueries({ predicate: q => {
+        const k = q.queryKey?.[0];
+        return typeof k === "string" && k !== "/api/auth/me";
+      }});
+      toast({ title: "Signed out" });
     },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't sign out", description: String(e?.message || "") }),
   });
   return (
-    <Button variant="ghost" size="sm" onClick={() => signOut.mutate()} data-testid="button-sign-out">
-      <LogOut className="h-4 w-4 mr-1" /> Sign out
+    <Button variant="ghost" size="sm" onClick={() => signOut.mutate()} disabled={signOut.isPending} data-testid="button-sign-out">
+      <LogOut className="h-4 w-4 mr-1" /> {signOut.isPending ? "Signing out…" : "Sign out"}
     </Button>
   );
 }
@@ -1202,8 +1213,11 @@ function ChangeCredentialsCard() {
       setPassword(""); setCurrentPassword(""); setPhone("");
       if (result?.signedOut) {
         toast({ title: "Password changed", description: "Please sign in again with your new password." });
-        qc.clear();
-        qc.invalidateQueries({ queryKey: ["/api/auth/me"] });
+        qc.setQueryData(["/api/auth/me"], { authed: false });
+        qc.removeQueries({ predicate: q => {
+          const k = q.queryKey?.[0];
+          return typeof k === "string" && k !== "/api/auth/me";
+        }});
       } else {
         toast({ title: "Login updated" });
       }
