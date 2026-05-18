@@ -376,6 +376,26 @@ export default function Book() {
   }, [kidsList]);
   const isMultiKid = effectiveKids.length > 1;
 
+  // Auto-save the kids list to the profile when a returning user edits it.
+  // Without this, kids added in the profile step are only persisted if the user
+  // actually completes a booking, which is too easy to lose. Debounced so we
+  // don't fire on every keystroke.
+  useEffect(() => {
+    if (!profileLoaded) return; // only saves for returning users we recognize
+    if (effectiveKids.length <= 1) return; // primary kid only — nothing to save
+    const names = effectiveKids.map(k => k.name);
+    const handle = window.setTimeout(() => {
+      apiRequest("POST", `/api/profile/${profileLoaded.id}/kids`, {
+        kidNames: names,
+        proofEmail: profileLoaded.email || email,
+        proofPhone: profileLoaded.phone || normalizePhone(phone),
+      }).catch(() => { /* silent — booking will save it too */ });
+    }, 800);
+    return () => window.clearTimeout(handle);
+    // We intentionally key off the names so renames/adds re-trigger save.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [profileLoaded?.id, effectiveKids.map(k => k.name).join("|")]);
+
   // submit
   const checkout = useMutation({
     mutationFn: async () => {

@@ -1478,6 +1478,33 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Self-service profile update — requires matching email or phone (acts as proof of ownership)
+  // Save the list of kids on a profile without booking. Lets returning users
+  // add siblings to their account from the profile step and have them remembered
+  // even if they don't finish a checkout. Ownership is proven via email or phone
+  // matching the existing profile, same as PATCH /api/profile/:id.
+  app.post("/api/profile/:id/kids", (req, res) => {
+    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
+    const id = Number(req.params.id);
+    const existing = storage.getProfileById(tenantId, id);
+    if (!existing) return res.status(404).json({ error: "Not found" });
+    const isAdmin = !!(req as any).session?.admin;
+    if (!isAdmin) {
+      const proofEmail = String(req.body?.proofEmail || "").trim().toLowerCase();
+      const proofPhone = normalizePhone(String(req.body?.proofPhone || ""));
+      const emailMatch = !!proofEmail && (existing.email || "").trim().toLowerCase() === proofEmail;
+      const phoneMatch = !!proofPhone && existing.phone === proofPhone;
+      if (!emailMatch && !phoneMatch) {
+        return res.status(403).json({ error: "Verification failed. Please match the email or phone on file." });
+      }
+    }
+    const rawNames = Array.isArray(req.body?.kidNames) ? req.body.kidNames : [];
+    const kidNames: string[] = rawNames
+      .filter((n: unknown) => typeof n === "string" && n.trim().length > 0)
+      .map((n: string) => n.trim());
+    const updated = storage.mergeKidsOnProfile(tenantId, id, kidNames);
+    res.json(updated || existing);
+  });
+
   app.patch("/api/profile/:id", (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
