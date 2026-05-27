@@ -242,11 +242,15 @@ export default function Book() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedLessonTypeId]);
 
-  // Frontend duration filter: for lesson types longer than 30 min, disable
-  // slot starts whose subsequent SLOT_MIN windows (within the same day) are
-  // either booked or fall outside the day's open windows. The server enforces
-  // this for real, but the UI disables them eagerly so users don't pick a
-  // start time that can't fit.
+  // Frontend duration filter: for lesson types longer than 30 min, hide slot
+  // starts where the lesson wouldn't fit (next SLOT_MIN cells booked, or no
+  // adjacent cell exists in the open window). The server now returns the full
+  // 30-min grid for every open window with isStart marking which cells are
+  // valid lesson starts.
+  //   - slot.booked: that 30-min cell is held by an existing booking
+  //   - slot.isStart: a new lesson of the current duration can begin here
+  //     (i.e. the full duration fits inside an open window starting at s).
+  //     Defaults to true when missing so old clients keep working.
   const SLOT_MIN = 30;
   const durationMin = selectedLessonType?.durationMin ?? SLOT_MIN;
   const slotsNeeded = Math.max(1, Math.ceil(durationMin / SLOT_MIN));
@@ -257,6 +261,8 @@ export default function Book() {
       const slotsByStart = new Map(day.slots.map(s => [s.start, s]));
       const augmented = day.slots.map(s => {
         if (s.booked) return s;
+        // Server flag: this 30-min cell isn't a valid lesson start (won't fit).
+        if ((s as any).isStart === false) return { ...s, booked: true };
         const startMs = new Date(s.start + ":00").getTime();
         for (let i = 1; i < slotsNeeded; i++) {
           const next = new Date(startMs + i * SLOT_MIN * 60_000);
@@ -264,6 +270,9 @@ export default function Book() {
             `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}` +
             `T${String(next.getHours()).padStart(2, "0")}:${String(next.getMinutes()).padStart(2, "0")}`;
           const nextSlot = slotsByStart.get(nextIso);
+          // If the adjacent cell is missing entirely from the grid the
+          // lesson can't fit (window ends earlier). If it's present and
+          // booked, that cell is taken. Either way, block this start.
           if (!nextSlot || nextSlot.booked) {
             return { ...s, booked: true };
           }

@@ -240,22 +240,29 @@ function normalizeMode(m: string | null | undefined): OpenWindow["mode"] {
 }
 function openWindowsForDate(tenantId: number, date: string, adminUserId?: number): OpenWindow[] {
   const overrides = storage.getDateOverrides(tenantId, adminUserId).filter(o => o.date === date);
-  if (overrides.some(o => o.type === "closed")) return [];
   const dow = dayOfWeek(date);
-  const base = storage.getAvailability(tenantId, adminUserId).filter(a => a.dayOfWeek === dow);
+  const isClosed = overrides.some(o => o.type === "closed");
+  const extras = overrides.filter(o => o.type === "extra" && o.startTime && o.endTime);
+  // Custom hours pattern: "closed" + one or more "extra" overrides means
+  // the coach is replacing the weekly schedule with custom windows just for
+  // this day. If there are no extras, the day really is closed.
+  if (isClosed && extras.length === 0) return [];
+  // Standard hours apply unless the day is explicitly closed (in which case
+  // we only use the extras).
+  const base = isClosed
+    ? []
+    : storage.getAvailability(tenantId, adminUserId).filter(a => a.dayOfWeek === dow);
   const wins: OpenWindow[] = base.map(b => ({
     start: timeToMin(b.startTime),
     end: timeToMin(b.endTime),
     mode: normalizeMode((b as any).mode),
   }));
-  for (const o of overrides) {
-    if (o.type === "extra" && o.startTime && o.endTime) {
-      wins.push({
-        start: timeToMin(o.startTime),
-        end: timeToMin(o.endTime),
-        mode: normalizeMode((o as any).mode),
-      });
-    }
+  for (const o of extras) {
+    wins.push({
+      start: timeToMin(o.startTime!),
+      end: timeToMin(o.endTime!),
+      mode: normalizeMode((o as any).mode),
+    });
   }
   wins.sort((a, b) => a.start - b.start || (a.mode > b.mode ? 1 : -1));
   const merged: OpenWindow[] = [];
@@ -276,23 +283,23 @@ function openWindowsForDate(tenantId: number, date: string, adminUserId?: number
 //   - isGroupFilter=false -> windows with mode in {"solo", "both"}
 //   - isGroupFilter=null  -> all windows (legacy behavior, used by admin views)
 //
-// `durationMin` is the length of the lesson the customer is booking. We only
-// surface slot starts where start + durationMin fits inside an open window —
-// otherwise a 60-min lesson could be booked at 7:30 PM inside a 4-8 PM window
-// and run 30 min past close. Defaults to SLOT_MIN (30 min) for legacy callers.
+// Returns the full 30-min slot grid for a date, restricted to the day's open
+// windows. `durationMin` is informational — the grid itself is always on the
+// SLOT_MIN cadence so callers can see every 30-min cell inside an open window.
+// `availabilityForRange` then uses the duration to flag which cells are valid
+// lesson starts (`isStart`) without dropping the rest of the grid.
 function slotsForDate(
   tenantId: number,
   date: string,
   isGroupFilter: boolean | null = null,
   adminUserId?: number,
-  durationMin: number = SLOT_MIN,
+  _durationMin: number = SLOT_MIN, // kept for backwards compat
 ) {
-  const dur = Math.max(SLOT_MIN, durationMin);
   const out: string[] = [];
   for (const w of openWindowsForDate(tenantId, date, adminUserId)) {
     if (isGroupFilter === true && w.mode === "solo") continue;
     if (isGroupFilter === false && w.mode === "group") continue;
-    for (let m = w.start; m + dur <= w.end; m += SLOT_MIN) out.push(toIso(date, minToTime(m)));
+    for (let m = w.start; m + SLOT_MIN <= w.end; m += SLOT_MIN) out.push(toIso(date, minToTime(m)));
   }
   return out;
 }
@@ -373,24 +380,46 @@ function availabilityForRange(
       }
     }
   }
-  const days: { date: string; slots: { start: string; booked: boolean; remainingSpots?: number }[] }[] = [];
+  const days: { date: string; slots: { start: string; booked: boolean; isStart?: boolean; remainingSpots?: number }[] }[] = [];
   let cur = startDate;
   const ltDuration = forLessonType?.durationMin ?? SLOT_MIN;
+  const slotsNeeded = Math.max(1, Math.ceil(ltDuration / SLOT_MIN));
   while (cur <= endDate) {
-    const slots = slotsForDate(tenantId, cur, isGroupFilter, adminUserId, ltDuration).map(s => {
-      if (!forLessonType) {
-        // No lesson type picked — use the legacy semantics (admin view).
-        return { start: s, booked: bookedSet.has(s) };
-      }
-      // Slot held by another lesson type — always blocked.
-      if (anyOtherType.has(s)) return { start: s, booked: true };
-      if (forLessonType.isGroup) {
+    const gridSlots = slotsForDate(tenantId, cur, isGroupFilter, adminUserId, SLOT_MIN);
+    const gridSet = new Set(gridSlots);
+    // Pre-compute booked-state per grid cell so isStart can look ahead.
+    const cellBooked = new Map<string, boolean>();
+    for (const s of gridSlots) {
+      if (!forLessonType) cellBooked.set(s, bookedSet.has(s));
+      else if (anyOtherType.has(s)) cellBooked.set(s, true);
+      else if (forLessonType.isGroup) {
         const occupants = sameTypeOccupants.get(s) ?? 0;
-        const remaining = Math.max(0, forLessonType.capacity - occupants);
-        return { start: s, booked: remaining === 0, remainingSpots: remaining };
+        cellBooked.set(s, Math.max(0, forLessonType.capacity - occupants) === 0);
+      } else {
+        cellBooked.set(s, bookedSet.has(s));
       }
-      // Solo lesson type: any prior booking blocks the slot.
-      return { start: s, booked: bookedSet.has(s) };
+    }
+    const slots = gridSlots.map(s => {
+      const booked = cellBooked.get(s) ?? false;
+      // A cell is a valid lesson start only when every subsequent SLOT_MIN
+      // cell up to the full duration is in the open window AND not booked.
+      let isStart = true;
+      if (slotsNeeded > 1) {
+        const startMs = new Date(s + ":00").getTime();
+        for (let i = 1; i < slotsNeeded; i++) {
+          const nextMs = startMs + i * SLOT_MIN * 60_000;
+          const nd = new Date(nextMs);
+          const nextIso = `${nd.getFullYear()}-${pad(nd.getMonth() + 1)}-${pad(nd.getDate())}T${pad(nd.getHours())}:${pad(nd.getMinutes())}`;
+          if (!gridSet.has(nextIso) || cellBooked.get(nextIso)) { isStart = false; break; }
+        }
+      }
+      const base: { start: string; booked: boolean; isStart?: boolean; remainingSpots?: number } = { start: s, booked };
+      if (slotsNeeded > 1) base.isStart = isStart;
+      if (forLessonType?.isGroup) {
+        const occupants = sameTypeOccupants.get(s) ?? 0;
+        base.remainingSpots = Math.max(0, forLessonType.capacity - occupants);
+      }
+      return base;
     });
     days.push({ date: cur, slots });
     cur = addDays(cur, 1);
