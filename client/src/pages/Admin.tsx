@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useTenant, useTenantLabels } from "@/hooks/use-tenant";
-import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
+import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, formatTime, todayISO } from "@/lib/scheduling";
 import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil, RotateCcw, ZoomIn, ZoomOut, Move, Copy as CopyIcon, AlertCircle, CheckCircle2, Circle, Sparkles } from "lucide-react";
 
 type Booking = {
@@ -449,7 +449,7 @@ function SignOutButton() {
   );
 }
 
-function AddBookingDialog() {
+function AddBookingDialog({ initialDate, initialTime, openSignal }: { initialDate?: string; initialTime?: string; openSignal?: number } = {}) {
   const qc = useQueryClient();
   const { toast } = useToast();
   const labels = useTenantLabels();
@@ -459,10 +459,21 @@ function AddBookingDialog() {
   const [playerName, setPlayerName] = useState("");
   const [phone, setPhone] = useState("");
   const [email, setEmail] = useState("");
-  const [date, setDate] = useState(todayISO());
-  const [time, setTime] = useState("16:00");
+  const [date, setDate] = useState(initialDate ?? todayISO());
+  const [time, setTime] = useState(initialTime ?? "16:00");
   const [notes, setNotes] = useState("");
   const [coachId, setCoachId] = useState<string>("");
+  const [lessonTypeId, setLessonTypeId] = useState<string>("");
+
+  // Allow parents to programmatically open this dialog with a preset date.
+  useEffect(() => {
+    if (openSignal !== undefined && openSignal > 0) {
+      if (initialDate) setDate(initialDate);
+      if (initialTime) setTime(initialTime);
+      setOpen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openSignal]);
 
   const { data: membersData } = useQuery<{ profiles: MemberRow[] }>({
     queryKey: ["/api/admin/profiles"],
@@ -486,6 +497,26 @@ function AddBookingDialog() {
       setCoachId(String(coaches[0].id));
     }
   }, [open, coaches, coachId]);
+
+  // Lesson types — fetch active ones, scoped to the selected coach when one is
+  // chosen. Default the picker to the first available so the admin always gets
+  // an explicit lesson duration on the POST.
+  const lessonTypesQueryKey = useMemo(() => {
+    const params = showCoachPicker && coachId ? `?coachId=${coachId}` : "";
+    return [`/api/lesson-types${params}`];
+  }, [showCoachPicker, coachId]);
+  const { data: lessonTypesData } = useQuery<{ lessonTypes: { id: number; name: string; durationMin: number; capacity: number }[] }>({
+    queryKey: lessonTypesQueryKey,
+    enabled: open,
+  });
+  const lessonTypes = lessonTypesData?.lessonTypes ?? [];
+  // When the coach changes (or dialog opens), reset to the first lesson type
+  // available for that coach. Don't reset if the current selection is still valid.
+  useEffect(() => {
+    if (!open || lessonTypes.length === 0) return;
+    const stillValid = lessonTypeId && lessonTypes.some(lt => String(lt.id) === lessonTypeId);
+    if (!stillValid) setLessonTypeId(String(lessonTypes[0].id));
+  }, [open, lessonTypes, lessonTypeId]);
 
   function pickMember(id: string) {
     setMemberId(id);
@@ -516,6 +547,9 @@ function AddBookingDialog() {
       // Only send coachId when multiple coaches exist — server falls back to
       // the solo coach otherwise (preserves back-compat).
       if (showCoachPicker && coachId) body.coachId = Number(coachId);
+      // Send lessonTypeId so server uses the right duration (30 vs 60 min, etc.)
+      // for collision detection and slot-occupancy math.
+      if (lessonTypeId) body.lessonTypeId = Number(lessonTypeId);
       const r = await apiRequest("POST", "/api/bookings", body);
       const json = await r.json();
       if (!r.ok) throw new Error(json?.error || "Couldn't create booking");
@@ -590,6 +624,24 @@ function AddBookingDialog() {
               </SelectContent>
             </Select>
           </div>
+
+          {lessonTypes.length > 0 && (
+            <div className="space-y-1">
+              <Label>Lesson length</Label>
+              <Select value={lessonTypeId} onValueChange={setLessonTypeId}>
+                <SelectTrigger data-testid="select-admin-booking-lesson-type">
+                  <SelectValue placeholder="Pick a lesson type" />
+                </SelectTrigger>
+                <SelectContent>
+                  {lessonTypes.map(lt => (
+                    <SelectItem key={lt.id} value={String(lt.id)}>
+                      {lt.name} ({lt.durationMin} min{lt.capacity > 1 ? `, up to ${lt.capacity}` : ""})
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          )}
 
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
@@ -820,6 +872,9 @@ function AvailabilityPanel() {
 
   // ----- Day editor dialog state -----
   const [editingDate, setEditingDate] = useState<string | null>(null);
+  // Signal + preset date for opening the AddBookingDialog from the day editor.
+  const [bookingPresetDate, setBookingPresetDate] = useState<string | undefined>(undefined);
+  const [bookingOpenSignal, setBookingOpenSignal] = useState(0);
 
   // Convenience lookups
   const weeklyByDow = useMemo<Record<number, Availability[]>>(() => {
@@ -840,16 +895,22 @@ function AvailabilityPanel() {
     return out;
   }, [data]);
 
-  const bookingsByDate = useMemo<Record<string, number>>(() => {
-    const out: Record<string, number> = {};
+  // Per-date bookings list (filtered to selected coach when multi-coach).
+  const bookingsByDateList = useMemo<Record<string, Booking[]>>(() => {
+    const out: Record<string, Booking[]> = {};
     for (const b of (bookingsData?.bookings ?? [])) {
-      // Optionally filter to selected coach
       if (selectedCoachId !== null && b.adminUserId && b.adminUserId !== selectedCoachId) continue;
       const date = b.start.split("T")[0];
-      out[date] = (out[date] || 0) + 1;
+      (out[date] = out[date] || []).push(b);
     }
     return out;
   }, [bookingsData, selectedCoachId]);
+
+  const bookingsByDate = useMemo<Record<string, number>>(() => {
+    const out: Record<string, number> = {};
+    for (const [date, list] of Object.entries(bookingsByDateList)) out[date] = list.length;
+    return out;
+  }, [bookingsByDateList]);
 
   return (
     <div className="space-y-4 mt-4">
@@ -913,8 +974,14 @@ function AvailabilityPanel() {
           coachId={selectedCoachId}
           weeklyByDow={weeklyByDow}
           overrides={overridesByDate[editingDate] ?? []}
-          bookingsCount={bookingsByDate[editingDate] ?? 0}
+          dayBookings={bookingsByDateList[editingDate] ?? []}
           onClose={() => setEditingDate(null)}
+          onBookForDay={(d) => {
+            // Close the day editor, then trigger the booking dialog with this date preset.
+            setEditingDate(null);
+            setBookingPresetDate(d);
+            setBookingOpenSignal(n => n + 1);
+          }}
           onSaved={(result) => {
             qc.invalidateQueries({ queryKey: ["/api/availability"] });
             qc.invalidateQueries({ queryKey: ["/api/slots"] });
@@ -934,6 +1001,11 @@ function AvailabilityPanel() {
           }}
         />
       )}
+
+      {/* Hidden trigger for opening the booking dialog with a preset date from the calendar. */}
+      <div className="hidden">
+        <AddBookingDialog initialDate={bookingPresetDate} openSignal={bookingOpenSignal} />
+      </div>
     </div>
   );
 }
@@ -1224,17 +1296,19 @@ function MonthCalendar({
 
 // ----- Day editor dialog -----
 function DayEditorDialog({
-  open, date, coachId, weeklyByDow, overrides, bookingsCount, onClose, onSaved,
+  open, date, coachId, weeklyByDow, overrides, dayBookings, onClose, onSaved, onBookForDay,
 }: {
   open: boolean;
   date: string;
   coachId: number | null;
   weeklyByDow: Record<number, Availability[]>;
   overrides: DateOverride[];
-  bookingsCount: number;
+  dayBookings: Booking[];
   onClose: () => void;
   onSaved: (result: any) => void;
+  onBookForDay?: (date: string) => void;
 }) {
+  const bookingsCount = dayBookings.length;
   type Window = { start: string; end: string; mode: "solo" | "group" | "both" };
   const dow = new Date(date + "T12:00:00").getDay();
   const standardWindows: Window[] = (weeklyByDow[dow] ?? []).map(w => ({ start: w.startTime, end: w.endTime, mode: ((w.mode as Window["mode"]) ?? "both") }));
@@ -1331,6 +1405,47 @@ function DayEditorDialog({
             {bookingsCount > 0 ? `${bookingsCount} booking${bookingsCount === 1 ? "" : "s"} on this day.` : "No bookings yet."}
           </DialogDescription>
         </DialogHeader>
+
+        {/* Appointments on this day */}
+        <div className="border rounded-md">
+          <div className="flex items-center justify-between px-3 py-2 border-b">
+            <div className="text-sm font-medium">Appointments</div>
+            {onBookForDay && (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => onBookForDay(date)}
+                data-testid="button-add-booking-for-day"
+              >
+                <CalendarPlus className="h-3.5 w-3.5 mr-1" /> Add booking
+              </Button>
+            )}
+          </div>
+          {dayBookings.length === 0 ? (
+            <div className="px-3 py-3 text-sm text-muted-foreground">No appointments yet.</div>
+          ) : (
+            <ul className="divide-y max-h-48 overflow-y-auto" data-testid="list-day-bookings">
+              {dayBookings
+                .slice()
+                .sort((a, b) => a.start.localeCompare(b.start))
+                .map(b => {
+                  const t = b.start.split("T")[1] ?? "";
+                  const startLabel = formatTime(t);
+                  return (
+                    <li key={b.id} className="px-3 py-2 flex items-center gap-2 text-sm" data-testid={`row-day-booking-${b.id}`}>
+                      {b.adminColor && (
+                        <span className="inline-block rounded-full shrink-0" style={{ width: 8, height: 8, background: b.adminColor }} />
+                      )}
+                      <span className="font-medium tabular-nums w-16 shrink-0">{startLabel}</span>
+                      <span className="truncate">{b.playerName}</span>
+                      <span className="text-muted-foreground truncate ml-1">({b.parentName})</span>
+                    </li>
+                  );
+                })}
+            </ul>
+          )}
+        </div>
 
         <div className="space-y-3">
           <div className="grid grid-cols-3 gap-2">
