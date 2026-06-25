@@ -376,6 +376,12 @@ export default function Book() {
   // submit
   const checkout = useMutation({
     mutationFn: async () => {
+      // Safety: never POST without a lesson type. The server requires it, and
+      // without it the booking would land with lesson_type_id=NULL, which used
+      // to corrupt collision detection across the calendar.
+      if (!selectedLessonTypeId) {
+        throw new Error("Please pick a lesson type before continuing.");
+      }
       // Build per-slot assignments. Each slot ISO -> kidIndex (0-based).
       // If the parent never visited the assign step, default everyone to kid 0.
       const slotsWithKids = Array.from(selected).map(s => ({
@@ -387,7 +393,7 @@ export default function Book() {
         phone: normalizePhone(phone),
         email: email.trim(),
         parentName, playerName, notes,
-        lessonTypeId: selectedLessonTypeId ?? undefined,
+        lessonTypeId: selectedLessonTypeId,
         coachId: selectedCoachId ?? undefined,
         // Multi-kid: send the list of kids so the server can store them on
         // the profile and route each slot to the right kid's booking row.

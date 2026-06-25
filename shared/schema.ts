@@ -375,7 +375,11 @@ export const checkoutSchema = z.object({
   parentName: z.string().min(1),
   playerName: z.string().min(1),
   notes: z.string().default(""),
-  lessonTypeId: z.number().int().positive().optional(),
+  // lessonTypeId is REQUIRED. Without it, the server can't compute the lesson's
+  // duration, which breaks collision detection and slot-occupancy math.
+  // Historically this was .optional() and led to corrupt bookings stored with
+  // lesson_type_id=NULL. Tightened to required — callers must always supply it.
+  lessonTypeId: z.number().int().positive(),
   // Extra group participants beyond the primary booker. Empty/omitted for solo.
   participants: z.array(checkoutParticipantSchema).default([]),
   // Multi-kid: when provided, each slot can be assigned to a kid by index.

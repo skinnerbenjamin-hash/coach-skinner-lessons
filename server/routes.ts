@@ -1169,10 +1169,16 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       return res.status(400).json({ error: `Bookings can be made up to ${maxDays} days in advance.` });
     }
     // Resolve lesson type and enforce capacity for group bookings.
+    // lessonTypeId is required at the schema layer, but belt-and-suspenders:
+    // reject anything that slipped through. A booking without a lesson type
+    // breaks collision detection because we can't compute duration.
+    if (!lessonTypeId) {
+      return res.status(400).json({ error: "A lesson type must be selected before booking." });
+    }
     let resolvedLessonTypeId: number | null = null;
     let lessonCapacity = 1;
     let resolvedIsGroup = false;
-    if (lessonTypeId) {
+    {
       const lt = storage.getLessonTypeById(tenantId, lessonTypeId);
       if (!lt) return res.status(400).json({ error: "Invalid lesson type for this site." });
       if (lt.active !== 1 && !isAdmin) {

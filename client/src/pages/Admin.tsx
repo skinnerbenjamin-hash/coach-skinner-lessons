@@ -547,9 +547,12 @@ function AddBookingDialog({ initialDate, initialTime, openSignal }: { initialDat
       // Only send coachId when multiple coaches exist — server falls back to
       // the solo coach otherwise (preserves back-compat).
       if (showCoachPicker && coachId) body.coachId = Number(coachId);
-      // Send lessonTypeId so server uses the right duration (30 vs 60 min, etc.)
-      // for collision detection and slot-occupancy math.
-      if (lessonTypeId) body.lessonTypeId = Number(lessonTypeId);
+      // lessonTypeId is required — without it the server can't compute duration
+      // and collision detection breaks. Block the submit before it leaves.
+      if (!lessonTypeId) {
+        throw new Error("Please pick a lesson length first.");
+      }
+      body.lessonTypeId = Number(lessonTypeId);
       const r = await apiRequest("POST", "/api/bookings", body);
       const json = await r.json();
       if (!r.ok) throw new Error(json?.error || "Couldn't create booking");
