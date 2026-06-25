@@ -1098,14 +1098,11 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   });
 
   // Gap check (used at review step)
-  app.post("/api/check-gaps", (req, res) => {
-    const tenantId = requireTenantId(req, res); if (tenantId === null) return;
-    const parsed = z.object({
-      slots: z.array(z.string()),
-      excludeBookingIds: z.array(z.number()).optional(),
-    }).safeParse(req.body);
-    if (!parsed.success) return res.status(400).json({ error: "invalid" });
-    res.json({ warnings: detectGaps(tenantId, parsed.data.slots, parsed.data.excludeBookingIds ?? []) });
+  // Gap-warning feature removed per user request — it was confusing customers
+  // by nudging them to slots that weren't actually bookable. Endpoint kept as
+  // a no-op so older cached clients that still call it don't error.
+  app.post("/api/check-gaps", (_req, res) => {
+    res.json({ warnings: [] });
   });
 
   // Checkout

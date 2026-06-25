@@ -35,11 +35,6 @@ type SlotsResponse = {
   maxBookingDays?: number;
   waitlistEnabled?: boolean;
 };
-type GapWarning = {
-  date: string; gapStart: string; gapEnd: string; gapMinutes: number;
-  message: string; suggestion?: { from: string; to: string; reason: string };
-};
-
 type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string; photoPath?: string; kidsJson?: string };
 type KidDraft = { name: string; notes: string };
 
@@ -346,33 +341,6 @@ export default function Book() {
     setPendingPhoto(f);
     if (pendingPhotoPreview) URL.revokeObjectURL(pendingPhotoPreview);
     setPendingPhotoPreview(f ? URL.createObjectURL(f) : null);
-  }
-
-  // gap check
-  const [gapWarnings, setGapWarnings] = useState<GapWarning[]>([]);
-  const checkGaps = useMutation({
-    mutationFn: async (slots: string[]) => {
-      const r = await apiRequest("POST", "/api/check-gaps", { slots });
-      return (await r.json()).warnings as GapWarning[];
-    },
-    onSuccess: (warnings) => setGapWarnings(warnings),
-  });
-
-  useEffect(() => {
-    if (step === "review" && selected.size > 0) {
-      checkGaps.mutate(Array.from(selected));
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [step, selected]);
-
-  // apply suggested shift
-  function applyShift(from: string, to: string) {
-    setSelected(prev => {
-      const next = new Set(prev);
-      next.delete(from);
-      next.add(to);
-      return next;
-    });
   }
 
   // Trim kidsList to entries with non-empty names. The primary kid is the
@@ -1191,36 +1159,6 @@ export default function Book() {
       {step === "review" && (
         <div className="mt-6 space-y-4">
           <h1 className="text-xl font-semibold">Review your booking</h1>
-
-          {gapWarnings.length > 0 && (
-            <div className="space-y-3">
-              {gapWarnings.map((w, i) => (
-                <Alert key={i} className="border-accent/60">
-                  <AlertTriangle className="h-4 w-4 text-accent-foreground" />
-                  <AlertDescription>
-                    <div className="font-medium">{w.message}</div>
-                    <div className="text-sm text-muted-foreground mt-1">
-                      Helps {businessName} avoid short orphan gaps in the calendar. Want to shift one of your slots to close it?
-                    </div>
-                    {w.suggestion && (
-                      <div className="mt-3 flex flex-wrap items-center gap-2">
-                        <Button
-                          size="sm"
-                          onClick={() => applyShift(w.suggestion!.from, w.suggestion!.to)}
-                          data-testid={`button-apply-shift-${i}`}
-                        >
-                          {w.suggestion.reason}
-                        </Button>
-                        <span className="text-xs text-muted-foreground">
-                          Or keep as-is — it's totally fine.
-                        </span>
-                      </div>
-                    )}
-                  </AlertDescription>
-                </Alert>
-              ))}
-            </div>
-          )}
 
           <Card>
             <CardContent className="p-6 space-y-3">
