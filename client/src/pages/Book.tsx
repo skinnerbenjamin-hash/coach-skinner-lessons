@@ -1133,7 +1133,7 @@ export default function Book() {
                       const currentIdx = slotKidIndex[s] ?? 0;
                       return (
                         <li key={s} className="flex items-center justify-between gap-3 text-sm">
-                          <span className="min-w-0" data-testid={`text-assign-slot-${s}`}>{formatIsoStartEnd(s)}</span>
+                          <span className="min-w-0" data-testid={`text-assign-slot-${s}`}>{formatIsoStartEnd(s, selectedLessonType?.durationMin ?? 30)}</span>
                           <select
                             className="text-sm rounded-md border border-border bg-background px-2 py-1"
                             value={currentIdx}
@@ -1213,7 +1213,7 @@ export default function Book() {
                             <ul className="mt-1 space-y-1">
                               {slots.map(s => (
                                 <li key={s} className="flex items-center justify-between text-sm">
-                                  <span data-testid={`text-review-slot-${s}`}>{formatIsoStartEnd(s)}</span>
+                                  <span data-testid={`text-review-slot-${s}`}>{formatIsoStartEnd(s, selectedLessonType?.durationMin ?? 30)}</span>
                                   <button
                                     className="text-muted-foreground hover:text-destructive p-1"
                                     onClick={() => setSelected(p => { const n = new Set(p); n.delete(s); return n; })}
@@ -1239,7 +1239,7 @@ export default function Book() {
                       <ul className="mt-1 space-y-1">
                         {slots.map(s => (
                           <li key={s} className="flex items-center justify-between text-sm">
-                            <span data-testid={`text-review-slot-${s}`}>{formatIsoStartEnd(s)}</span>
+                            <span data-testid={`text-review-slot-${s}`}>{formatIsoStartEnd(s, selectedLessonType?.durationMin ?? 30)}</span>
                             <button
                               className="text-muted-foreground hover:text-destructive p-1"
                               onClick={() => setSelected(p => { const n = new Set(p); n.delete(s); return n; })}
@@ -1306,7 +1306,7 @@ export default function Book() {
                   <ul className="text-sm space-y-1">
                     {confirmation.bookings.map((b) => (
                       <li key={b.start} data-testid={`text-confirmed-${b.start}`}>
-                        • {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
+                        • {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start, selectedLessonType?.durationMin ?? 30)}
                       </li>
                     ))}
                   </ul>
@@ -1322,7 +1322,7 @@ export default function Book() {
                         <ul className="text-sm space-y-1 pl-3 border-l-2 border-border">
                           {sessions.map(b => (
                             <li key={b.start} data-testid={`text-confirmed-${b.start}`}>
-                              • {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
+                              • {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start, selectedLessonType?.durationMin ?? 30)}
                             </li>
                           ))}
                         </ul>

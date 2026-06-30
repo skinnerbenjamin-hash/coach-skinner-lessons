@@ -25,10 +25,11 @@ export function formatDateFull(d: string) {
     weekday: "long", year: "numeric", month: "long", day: "numeric",
   });
 }
-export function formatIsoStartEnd(startIso: string) {
+export function formatIsoStartEnd(startIso: string, durationMin: number = 30) {
   const time = startIso.split("T")[1];
   const [h, m] = time.split(":").map(Number);
-  const endMin = h * 60 + m + 30;
+  const dur = Number.isFinite(durationMin) && durationMin > 0 ? durationMin : 30;
+  const endMin = h * 60 + m + dur;
   const endT = `${pad(Math.floor(endMin / 60))}:${pad(endMin % 60)}`;
   return `${formatTime(time)} – ${formatTime(endT)}`;
 }

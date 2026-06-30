@@ -502,6 +502,20 @@ export class DatabaseStorage {
         }
       } catch { /* ignore */ }
     }
+    // Denormalize the lesson type's duration so UI end-time formatting is correct
+    // for 60-min bookings (which are single-row, lessonTypeId=2). Falls back to
+    // 30 when the lesson type is missing for any reason.
+    let durationMin: number | undefined;
+    if (b.lessonTypeId != null) {
+      try {
+        const lt = sqlite.prepare(
+          `SELECT duration_min AS durationMin FROM lesson_types WHERE id = ? AND tenant_id = ? LIMIT 1`
+        ).get(b.lessonTypeId, tenantId) as { durationMin: number } | undefined;
+        if (lt && typeof lt.durationMin === "number") {
+          durationMin = lt.durationMin;
+        }
+      } catch { /* ignore */ }
+    }
     return {
       ...b,
       parentName: p?.parentName ?? "(unknown)",
@@ -510,6 +524,7 @@ export class DatabaseStorage {
       email: p?.email ?? "",
       notes: p?.notes ?? "",
       photoPath: p?.photoPath ?? "",
+      durationMin,
       adminColor,
       adminName,
       extraParticipants,

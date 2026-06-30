@@ -17,12 +17,16 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useTenant, useTenantLabels } from "@/hooks/use-tenant";
-import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, formatTime, todayISO } from "@/lib/scheduling";
+import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
 import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil, RotateCcw, ZoomIn, ZoomOut, Move, Copy as CopyIcon, AlertCircle, CheckCircle2, Circle, Sparkles } from "lucide-react";
 
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
   profileId: number;
+  lessonTypeId?: number | null;
+  // Denormalized lesson-type duration so we render correct end times for
+  // 60-min bookings (single-row lessonTypeId=2). Defaults to 30 when missing.
+  durationMin?: number | null;
   parentName: string; playerName: string; phone: string; email: string; notes: string;
   photoPath: string;
   // Stage 2B: assigned coach info (denormalized)
@@ -735,7 +739,7 @@ function BookingsPanel() {
             </Avatar>
             <div className="min-w-0">
               <div className="font-medium">
-                {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}
+                {formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start, b.durationMin ?? 30)}
               </div>
               <div className="text-sm text-muted-foreground">
                 <button
@@ -1433,14 +1437,14 @@ function DayEditorDialog({
                 .slice()
                 .sort((a, b) => a.start.localeCompare(b.start))
                 .map(b => {
-                  const t = b.start.split("T")[1] ?? "";
-                  const startLabel = formatTime(t);
+                  const dur = b.durationMin ?? 30;
+                  const rangeLabel = formatIsoStartEnd(b.start, dur);
                   return (
                     <li key={b.id} className="px-3 py-2 flex items-center gap-2 text-sm" data-testid={`row-day-booking-${b.id}`}>
                       {b.adminColor && (
                         <span className="inline-block rounded-full shrink-0" style={{ width: 8, height: 8, background: b.adminColor }} />
                       )}
-                      <span className="font-medium tabular-nums w-16 shrink-0">{startLabel}</span>
+                      <span className="font-medium tabular-nums shrink-0">{rangeLabel}</span>
                       <span className="truncate">{b.playerName}</span>
                       <span className="text-muted-foreground truncate ml-1">({b.parentName})</span>
                     </li>

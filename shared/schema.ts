@@ -427,6 +427,10 @@ export type BookingWithProfile = Booking & {
   email: string;
   notes: string;
   photoPath: string;
+  // Denormalized lesson-type duration so the UI can render correct end times
+  // for 60-min bookings (single-row lessonTypeId=2). Falls back to 30 if the
+  // lesson type is missing for any reason.
+  durationMin?: number;
   // Denormalized coach info for admin UI color-coding (Stage 2B)
   adminColor?: string;
   adminName?: string;

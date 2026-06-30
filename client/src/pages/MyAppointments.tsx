@@ -24,6 +24,8 @@ import { Lock, Search, Pencil, Camera, Trash2, Send, Paperclip, Link as LinkIcon
 type Booking = {
   id: number; start: string; bookingGroup: string; createdAt: number;
   parentName: string; playerName: string; phone: string; email: string; notes: string;
+  // Denormalized lesson duration so end times render correctly for 60-min bookings.
+  durationMin?: number | null;
 };
 type Profile = { id: number; phone: string; email: string; parentName: string; playerName: string; notes: string; photoPath: string };
 type CoachingNote = { id: number; profileId: number; author: "coach" | "parent"; text: string; mediaType: "image" | "video" | "link" | null; mediaPath: string | null; mediaUrl: string | null; createdAt: number };
@@ -166,7 +168,7 @@ export default function MyAppointments() {
                   <div className="space-y-2 opacity-70">
                     {past.map(b => (
                       <div key={b.id} className="flex items-center justify-between border rounded-md p-3 text-sm">
-                        <div>{formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start)}</div>
+                        <div>{formatDateLong(b.start.split("T")[0])} — {formatIsoStartEnd(b.start, b.durationMin ?? 30)}</div>
                         <Badge variant="outline">Completed</Badge>
                       </div>
                     ))}
@@ -199,7 +201,7 @@ function BookingRow({ b, onCancel }: { b: Booking; onCancel: () => void }) {
     >
       <div>
         <div className="font-medium">{formatDateFull(b.start.split("T")[0])}</div>
-        <div className="text-sm text-muted-foreground">{formatIsoStartEnd(b.start)}</div>
+        <div className="text-sm text-muted-foreground">{formatIsoStartEnd(b.start, b.durationMin ?? 30)}</div>
       </div>
       <div className="flex items-center gap-2">
         {locked ? (
@@ -360,7 +362,7 @@ function RescheduleDialog({ booking }: { booking: Booking }) {
           <DialogTitle>Reschedule session</DialogTitle>
         </DialogHeader>
         <div className="text-sm text-muted-foreground">
-          Currently: {formatDateFull(booking.start.split("T")[0])} — {formatIsoStartEnd(booking.start)}
+          Currently: {formatDateFull(booking.start.split("T")[0])} — {formatIsoStartEnd(booking.start, booking.durationMin ?? 30)}
         </div>
         <div className="max-h-[55vh] overflow-y-auto space-y-3 pt-2">
           {data?.days.map(d => {
