@@ -2264,6 +2264,21 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     res.json({ ok: true });
   });
 
+  // Admin-only: send a custom email to an arbitrary recipient using the tenant's
+  // configured Resend from address. Used for ad-hoc parent notifications ("out
+  // of town", "schedule change", etc.) that don't fit the built-in templates.
+  app.post("/api/admin/send-email", requireAdmin, async (req, res) => {
+    const to = String(req.body?.to || "").trim();
+    const subject = String(req.body?.subject || "").trim();
+    const text = String(req.body?.text || "").trim();
+    const html = typeof req.body?.html === "string" ? req.body.html : undefined;
+    if (!to || !subject || !text) {
+      return res.status(400).json({ error: "to, subject, and text are required" });
+    }
+    const result = await sendEmail({ to, subject, text, html });
+    res.json(result);
+  });
+
   app.post("/api/settings/test-email", requireAdmin, async (_req, res) => {
     const to = getSetting("coachEmail");
     if (!to) return res.status(400).json({ error: "Set coach email first" });
