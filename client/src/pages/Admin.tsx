@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useTenant, useTenantLabels } from "@/hooks/use-tenant";
-import { addDays, formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, formatTime, todayISO } from "@/lib/scheduling";
+import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
 import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil, RotateCcw, ZoomIn, ZoomOut, Move, Copy as CopyIcon, AlertCircle, CheckCircle2, Circle, Sparkles } from "lucide-react";
 
 type Booking = {
@@ -697,30 +697,33 @@ function AddBookingDialog({ initialDate, initialTime, openSignal }: { initialDat
   );
 }
 
-// Admin reschedule: pick any open start time (no lead-time limit for the coach).
-// Uses the booking's own lesson type + coach so 60-min lessons only offer starts
-// where the full hour fits. Server emails the parent the old -> new time.
-function AdminRescheduleDialog({ booking }: { booking: Booking }) {
+// Admin reschedule: the coach can move a lesson to ANY date and time — closed
+// days, outside normal hours, even on top of another booking (with a warning).
+// Parents' own reschedule flow stays limited to open slots. Server emails the
+// parent the old -> new time.
+function AdminRescheduleDialog({ booking, allBookings }: { booking: Booking; allBookings: Booking[] }) {
   const [open, setOpen] = useState(false);
-  const [newStart, setNewStart] = useState<string | null>(null);
+  const [date, setDate] = useState(booking.start.split("T")[0]);
+  const [time, setTime] = useState(booking.start.split("T")[1]);
   const qc = useQueryClient();
   const { toast } = useToast();
-  const today = todayISO();
-  const end = addDays(today, 60);
   const dur = booking.durationMin ?? 30;
-  const params = new URLSearchParams({ start: today, end });
-  if (booking.lessonTypeId) params.set("lessonTypeId", String(booking.lessonTypeId));
-  if (booking.adminUserId) params.set("coachId", String(booking.adminUserId));
+  const newStart = date && time ? `${date}T${time.slice(0, 5)}` : "";
+  const unchanged = newStart === booking.start;
 
-  const { data, isLoading } = useQuery<{ days: { date: string; slots: { start: string; booked: boolean; isStart?: boolean }[] }[] }>({
-    queryKey: ["/api/slots", "admin-resched", booking.id, today],
-    queryFn: async () => (await apiRequest("GET", `/api/slots?${params.toString()}`)).json(),
-    enabled: open,
-  });
+  const toMin = (iso: string) => { const [d, t] = iso.split("T"); const [h, m] = t.split(":").map(Number); return new Date(d + "T00:00").getTime() / 60000 + h * 60 + m; };
+  const conflicts = newStart && !unchanged
+    ? allBookings.filter(o => {
+        if (o.id === booking.id) return false;
+        const s1 = toMin(newStart), e1 = s1 + dur;
+        const s2 = toMin(o.start), e2 = s2 + (o.durationMin ?? 30);
+        return s1 < e2 && s2 < e1;
+      })
+    : [];
 
   const mut = useMutation({
     mutationFn: async () => {
-      if (!newStart) throw new Error("Pick a new time");
+      if (!newStart) throw new Error("Pick a date and time");
       await apiRequest("PATCH", `/api/bookings/${booking.id}?admin=1`, { newStart });
     },
     onSuccess: () => {
@@ -728,56 +731,51 @@ function AdminRescheduleDialog({ booking }: { booking: Booking }) {
       qc.invalidateQueries({ queryKey: ["/api/slots"] });
       toast({ title: "Rescheduled", description: `${booking.playerName} moved and ${booking.parentName} was emailed.` });
       setOpen(false);
-      setNewStart(null);
     },
     onError: (e: any) => toast({ variant: "destructive", title: "Couldn't reschedule", description: e.message }),
   });
 
-  const nowKey = (() => { const d = new Date(); const p = (n: number) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })();
-  const days = (data?.days ?? [])
-    .map(d => ({ date: d.date, open: d.slots.filter(s => !s.booked && s.isStart !== false && s.start > nowKey && s.start !== booking.start) }))
-    .filter(d => d.open.length > 0);
-
   return (
-    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setNewStart(null); }}>
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (o) { setDate(booking.start.split("T")[0]); setTime(booking.start.split("T")[1]); } }}>
       <DialogTrigger asChild>
         <Button variant="outline" size="sm" data-testid={`button-admin-reschedule-${booking.id}`}>
           <RotateCcw className="h-4 w-4 mr-1" /> Reschedule
         </Button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-md">
         <DialogHeader>
           <DialogTitle>Reschedule {booking.playerName}</DialogTitle>
           <DialogDescription>
-            Currently {formatDateFull(booking.start.split("T")[0])}, {formatIsoStartEnd(booking.start, dur)} ({dur} min). {booking.parentName} will get an email with the new time.
+            Currently {formatDateFull(booking.start.split("T")[0])}, {formatIsoStartEnd(booking.start, dur)} ({dur} min). Pick any date and time. {booking.parentName} will get an email with the new time.
           </DialogDescription>
         </DialogHeader>
-        <div className="max-h-[55vh] overflow-y-auto space-y-3 pt-2">
-          {isLoading && <p className="text-sm text-muted-foreground">Loading open times…</p>}
-          {!isLoading && days.length === 0 && <p className="text-sm text-muted-foreground">No open times in the next 60 days.</p>}
-          {days.map(d => (
-            <div key={d.date}>
-              <div className="text-sm font-medium mb-1">{formatDateLong(d.date)}</div>
-              <div className="flex flex-wrap gap-1.5">
-                {d.open.map(s => (
-                  <button
-                    key={s.start}
-                    type="button"
-                    onClick={() => setNewStart(s.start)}
-                    data-testid={`button-admin-resched-${s.start}`}
-                    className={"text-xs px-2 py-1.5 rounded-md border " + (newStart === s.start ? "border-primary bg-primary text-primary-foreground" : "hover-elevate")}
-                  >
-                    {formatTime(s.start.split("T")[1])}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ))}
+        <div className="grid grid-cols-2 gap-3 pt-1">
+          <div className="space-y-1">
+            <Label htmlFor={`resched-date-${booking.id}`}>Date</Label>
+            <Input id={`resched-date-${booking.id}`} type="date" value={date} onChange={e => setDate(e.target.value)} data-testid="input-admin-resched-date" />
+          </div>
+          <div className="space-y-1">
+            <Label htmlFor={`resched-time-${booking.id}`}>Start time</Label>
+            <Input id={`resched-time-${booking.id}`} type="time" step={300} value={time} onChange={e => setTime(e.target.value)} data-testid="input-admin-resched-time" />
+          </div>
         </div>
+        {newStart && !unchanged && (
+          <p className="text-sm" data-testid="text-admin-resched-preview">
+            New time: <span className="font-medium">{formatDateFull(date)}, {formatIsoStartEnd(newStart, dur)}</span>
+          </p>
+        )}
+        {conflicts.length > 0 && (
+          <Alert variant="destructive" data-testid="alert-admin-resched-conflict">
+            <AlertCircle className="h-4 w-4" />
+            <AlertDescription>
+              Overlaps {conflicts.map(c => `${c.playerName} (${formatIsoStartEnd(c.start, c.durationMin ?? 30)})`).join(", ")}. You can still save it.
+            </AlertDescription>
+          </Alert>
+        )}
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>
-          <Button onClick={() => mut.mutate()} disabled={!newStart || mut.isPending} data-testid="button-admin-confirm-reschedule">
-            {mut.isPending ? "Saving…" : newStart ? `Move to ${formatDateLong(newStart.split("T")[0])} ${formatTime(newStart.split("T")[1])}` : "Pick a time"}
+          <Button onClick={() => mut.mutate()} disabled={!newStart || unchanged || mut.isPending} data-testid="button-admin-confirm-reschedule">
+            {mut.isPending ? "Saving…" : "Save new time"}
           </Button>
         </DialogFooter>
       </DialogContent>
@@ -864,7 +862,7 @@ function BookingsPanel() {
             <Badge variant="outline">Done</Badge>
           ) : (
             <div className="flex items-center gap-1 flex-shrink-0">
-              <AdminRescheduleDialog booking={b} />
+              <AdminRescheduleDialog booking={b} allBookings={data?.bookings ?? []} />
               <Button
                 variant="ghost" size="sm"
                 onClick={() => del.mutate(b.id)}

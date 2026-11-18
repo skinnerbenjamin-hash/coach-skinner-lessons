@@ -1601,7 +1601,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
   app.delete("/api/bookings/:id", (req, res) => {
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
-    const isAdmin = String(req.query.admin || "") === "1";
+    // Admin mode requires a real admin session — the ?admin=1 flag alone is not trusted.
+    const isAdmin = String(req.query.admin || "") === "1" && isAdminReq(req);
+    if (String(req.query.admin || "") === "1" && !isAdmin) return res.status(401).json({ error: "Admin login required" });
     const b = storage.getBookingById(tenantId, id);
     if (!b) return res.status(404).json({ error: "Not found" });
     {
@@ -1770,7 +1772,10 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     const tenantId = requireTenantId(req, res); if (tenantId === null) return;
     const id = Number(req.params.id);
     const newStart = String(req.body?.newStart || "");
-    const isAdmin = String(req.query.admin || "") === "1";
+    // Admin mode requires a real admin session — the ?admin=1 flag alone is not trusted.
+    const isAdmin = String(req.query.admin || "") === "1" && isAdminReq(req);
+    if (String(req.query.admin || "") === "1" && !isAdmin) return res.status(401).json({ error: "Admin login required" });
+    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(newStart)) return res.status(400).json({ error: "Invalid date/time." });
     const b = storage.getBookingById(tenantId, id);
     if (!b) return res.status(404).json({ error: "Not found" });
     const _leadHrs = tenantMinLeadHours(req);
@@ -1790,6 +1795,9 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
     if (!isAdmin && isBeyondMaxWindow(newStart, _maxMs)) {
       return res.status(400).json({ error: `New time must be within ${_maxDays} days.` });
     }
+    // Admins can move a lesson to ANY date/time (closed days, outside hours,
+    // overlapping) — the coach is the authority. Parents stay limited to open slots.
+    if (!isAdmin) {
     // collision
     const existing = storage.getBookingsByStarts(tenantId, [newStart]).filter(x => x.id !== id);
     if (existing.length) return res.status(409).json({ error: "That time is already booked." });
@@ -1802,6 +1810,7 @@ export async function registerRoutes(httpServer: Server, app: Express): Promise<
       slotsForDate(tenantId, isoDate(newStart), null, b.adminUserId ?? undefined, rescheduleDur)
     );
     if (!validSlots.has(newStart)) return res.status(400).json({ error: "Not an open time slot." });
+    }
     const oldStart = b.start;
     storage.updateBookingStart(tenantId, id, newStart);
     const profile = storage.getProfileById(tenantId, b.profileId);
