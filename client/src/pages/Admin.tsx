@@ -17,7 +17,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger, Dialog
 import { apiRequest } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import { useTenant, useTenantLabels } from "@/hooks/use-tenant";
-import { formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, todayISO } from "@/lib/scheduling";
+import { addDays, formatDateFull, formatDateLong, formatIsoStartEnd, formatPhone, formatTime, todayISO } from "@/lib/scheduling";
 import { Trash2, LogOut, Eye, EyeOff, Send, Download, Search, FileText, ExternalLink, Image as ImageIcon, Upload, UserPlus, Crown, ShieldCheck, Paperclip, Link as LinkIcon, X, Video, Plus, CalendarPlus, Pencil, RotateCcw, ZoomIn, ZoomOut, Move, Copy as CopyIcon, AlertCircle, CheckCircle2, Circle, Sparkles } from "lucide-react";
 
 type Booking = {
@@ -697,6 +697,94 @@ function AddBookingDialog({ initialDate, initialTime, openSignal }: { initialDat
   );
 }
 
+// Admin reschedule: pick any open start time (no lead-time limit for the coach).
+// Uses the booking's own lesson type + coach so 60-min lessons only offer starts
+// where the full hour fits. Server emails the parent the old -> new time.
+function AdminRescheduleDialog({ booking }: { booking: Booking }) {
+  const [open, setOpen] = useState(false);
+  const [newStart, setNewStart] = useState<string | null>(null);
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  const today = todayISO();
+  const end = addDays(today, 60);
+  const dur = booking.durationMin ?? 30;
+  const params = new URLSearchParams({ start: today, end });
+  if (booking.lessonTypeId) params.set("lessonTypeId", String(booking.lessonTypeId));
+  if (booking.adminUserId) params.set("coachId", String(booking.adminUserId));
+
+  const { data, isLoading } = useQuery<{ days: { date: string; slots: { start: string; booked: boolean; isStart?: boolean }[] }[] }>({
+    queryKey: ["/api/slots", "admin-resched", booking.id, today],
+    queryFn: async () => (await apiRequest("GET", `/api/slots?${params.toString()}`)).json(),
+    enabled: open,
+  });
+
+  const mut = useMutation({
+    mutationFn: async () => {
+      if (!newStart) throw new Error("Pick a new time");
+      await apiRequest("PATCH", `/api/bookings/${booking.id}?admin=1`, { newStart });
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/bookings"] });
+      qc.invalidateQueries({ queryKey: ["/api/slots"] });
+      toast({ title: "Rescheduled", description: `${booking.playerName} moved and ${booking.parentName} was emailed.` });
+      setOpen(false);
+      setNewStart(null);
+    },
+    onError: (e: any) => toast({ variant: "destructive", title: "Couldn't reschedule", description: e.message }),
+  });
+
+  const nowKey = (() => { const d = new Date(); const p = (n: number) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`; })();
+  const days = (data?.days ?? [])
+    .map(d => ({ date: d.date, open: d.slots.filter(s => !s.booked && s.isStart !== false && s.start > nowKey && s.start !== booking.start) }))
+    .filter(d => d.open.length > 0);
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { setOpen(o); if (!o) setNewStart(null); }}>
+      <DialogTrigger asChild>
+        <Button variant="outline" size="sm" data-testid={`button-admin-reschedule-${booking.id}`}>
+          <RotateCcw className="h-4 w-4 mr-1" /> Reschedule
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Reschedule {booking.playerName}</DialogTitle>
+          <DialogDescription>
+            Currently {formatDateFull(booking.start.split("T")[0])}, {formatIsoStartEnd(booking.start, dur)} ({dur} min). {booking.parentName} will get an email with the new time.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="max-h-[55vh] overflow-y-auto space-y-3 pt-2">
+          {isLoading && <p className="text-sm text-muted-foreground">Loading open times…</p>}
+          {!isLoading && days.length === 0 && <p className="text-sm text-muted-foreground">No open times in the next 60 days.</p>}
+          {days.map(d => (
+            <div key={d.date}>
+              <div className="text-sm font-medium mb-1">{formatDateLong(d.date)}</div>
+              <div className="flex flex-wrap gap-1.5">
+                {d.open.map(s => (
+                  <button
+                    key={s.start}
+                    type="button"
+                    onClick={() => setNewStart(s.start)}
+                    data-testid={`button-admin-resched-${s.start}`}
+                    className={"text-xs px-2 py-1.5 rounded-md border " + (newStart === s.start ? "border-primary bg-primary text-primary-foreground" : "hover-elevate")}
+                  >
+                    {formatTime(s.start.split("T")[1])}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setOpen(false)}>Close</Button>
+          <Button onClick={() => mut.mutate()} disabled={!newStart || mut.isPending} data-testid="button-admin-confirm-reschedule">
+            {mut.isPending ? "Saving…" : newStart ? `Move to ${formatDateLong(newStart.split("T")[0])} ${formatTime(newStart.split("T")[1])}` : "Pick a time"}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function BookingsPanel() {
   const qc = useQueryClient();
   const { toast } = useToast();
@@ -775,13 +863,16 @@ function BookingsPanel() {
           {dimmed ? (
             <Badge variant="outline">Done</Badge>
           ) : (
-            <Button
-              variant="ghost" size="sm"
-              onClick={() => del.mutate(b.id)}
-              data-testid={`button-admin-cancel-${b.id}`}
-            >
-              <Trash2 className="h-4 w-4 mr-1" /> Cancel
-            </Button>
+            <div className="flex items-center gap-1 flex-shrink-0">
+              <AdminRescheduleDialog booking={b} />
+              <Button
+                variant="ghost" size="sm"
+                onClick={() => del.mutate(b.id)}
+                data-testid={`button-admin-cancel-${b.id}`}
+              >
+                <Trash2 className="h-4 w-4 mr-1" /> Cancel
+              </Button>
+            </div>
           )}
         </div>
       </div>
